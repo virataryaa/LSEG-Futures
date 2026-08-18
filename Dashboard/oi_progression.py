@@ -88,6 +88,19 @@ def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     return df
 
 
+def _most_active_month(df: pd.DataFrame) -> str:
+    """Pick whichever currently-listed (not-yet-expired) contract has the
+    highest Open Interest as of the latest available date, and return its
+    delivery month — i.e. what's most active right now, not historically."""
+    today  = pd.Timestamp(date.today())
+    active = df[df["LTD"] >= today]
+    if active.empty:
+        active = df
+    latest_date = active["Date"].max()
+    latest      = active[active["Date"] == latest_date]
+    return latest.loc[latest["open_interest"].idxmax(), "month"]
+
+
 # ── Band computation ──────────────────────────────────────────────────────────
 def _split_contracts(dm):
     today = pd.Timestamp(date.today())
@@ -341,7 +354,8 @@ with st.sidebar:
     mt              = _mtime(commodity)
     df_sidebar      = load_data(commodity, mt)
     avail_months    = sorted(df_sidebar["month"].unique())
-    default_idx     = avail_months.index("N") if "N" in avail_months else 0
+    most_active     = _most_active_month(df_sidebar)
+    default_idx     = avail_months.index(most_active) if most_active in avail_months else 0
     selected_month  = st.selectbox("Contract Month", avail_months, index=default_idx,
                                    format_func=lambda x: f"{MONTH_NAMES.get(x,x)} ({x})")
 
