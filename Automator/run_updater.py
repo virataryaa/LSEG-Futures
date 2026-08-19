@@ -74,7 +74,7 @@ except Exception as e:
 
 after  = row_counts()
 ldates = last_dates()
-all_ok = script_ok and not script_err
+all_ok = script_ok
 
 lines = [
     "Futures Database (LSEG interim migration) — Daily Update",
@@ -91,7 +91,8 @@ for comm in COMMODITIES:
     lines.append(f"{comm:<10} {upserted:>14,}  {total:>12,}  {last_d:>12}  {status_str}")
 
 if script_err:
-    lines += ["", "--- ERRORS ---", script_err]
+    label = "--- ERRORS ---" if not script_ok else "--- STDERR (non-fatal, script exit code 0) ---"
+    lines += ["", label, script_err]
 
 body    = "\n".join(lines)
 subject = f"[OK] ICE-FUTURES (LSEG) — {today}" if all_ok else f"[Need Intervention] ICE-FUTURES (LSEG) — {today}"

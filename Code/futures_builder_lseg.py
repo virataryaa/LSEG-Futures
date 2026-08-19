@@ -36,6 +36,7 @@ from typing import Callable, Dict, List
 
 import numpy as np
 import pandas as pd
+pd.set_option("future.no_silent_downcasting", True)  # silences a harmless lseg.data internal FutureWarning
 from pandas.tseries.holiday import (
     AbstractHolidayCalendar, Holiday, nearest_workday,
     USMartinLutherKingJr, USPresidentsDay, GoodFriday, EasterMonday,
