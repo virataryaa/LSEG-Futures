@@ -565,7 +565,7 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_vol, tab_flow, tab_grid = st.tabs(["OI Progression", "Volume", "OI Flow", "Comprehensive Grid"])
+tab_oi, tab_vol, tab_flow, tab_grid = st.tabs(["OI Progression", "Volume", "OI & Volume Flow", "Comprehensive Grid"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
