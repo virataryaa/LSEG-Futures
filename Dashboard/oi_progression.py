@@ -831,6 +831,71 @@ with tab_flow:
         )
         st.plotly_chart(fig_flow, use_container_width=True)
 
+        # ── Scatter: Volume vs OI Change ─────────────────────────────────────
+        st.markdown("#### Volume vs OI Change — Scatter")
+        oi_chg_mode = st.radio(
+            "OI Δ", ["Signed (Recommended)", "Absolute"], horizontal=True,
+            key="flow_scatter_mode",
+            help="Signed: keeps direction, so you can see whether high-volume days "
+                 "tend to build or unwind OI. Absolute: |OI change| vs Volume, useful "
+                 "for spotting high-churn days — big volume that produced little net "
+                 "position change (points far below a 45° line)."
+        )
+        y_scatter = flow_win["oi_change"] if "Signed" in oi_chg_mode else flow_win["oi_change"].abs()
+        x_scatter = flow_win["volume"]
+
+        if len(flow_win) < 5:
+            st.info("Not enough days in this window for a scatter.")
+        else:
+            xs, ys = x_scatter.values, y_scatter.values
+            slope, intercept = np.polyfit(xs, ys, 1)
+            r2 = np.corrcoef(xs, ys)[0, 1] ** 2
+            x_line = np.array([xs.min(), xs.max()])
+
+            if "Signed" in oi_chg_mode:
+                pt_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in ys]
+            else:
+                pt_colors = "#4A7FD4"
+
+            fig_sc = go.Figure()
+            fig_sc.add_trace(go.Scatter(
+                x=xs, y=ys, mode="markers",
+                marker=dict(color=pt_colors, size=8, opacity=0.7,
+                           line=dict(color="white", width=0.8)),
+                name="Daily obs", showlegend=False,
+                customdata=flow_win["Date"].dt.strftime("%b %d, %Y"),
+                hovertemplate="<b>%{customdata}</b><br>Volume: %{x:,.0f}<br>OI Δ: %{y:+,.0f}<extra></extra>",
+            ))
+            fig_sc.add_trace(go.Scatter(
+                x=x_line, y=slope * x_line + intercept, mode="lines",
+                line=dict(color="#1a1a2e", width=1.5, dash="dash"),
+                name=f"Fit (R²={r2:.2f})",
+            ))
+            fig_sc.add_trace(go.Scatter(
+                x=[xs[-1]], y=[ys[-1]], mode="markers",
+                marker=dict(color="#f59e0b", size=13, symbol="star",
+                           line=dict(color="white", width=1)),
+                name=f"Latest ({flow_win['Date'].iloc[-1].strftime('%b %d, %Y')})",
+            ))
+            fig_sc.update_layout(
+                height=440, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+                font=dict(color=C["font"], family="Inter, sans-serif"),
+                margin=dict(l=60, r=30, t=20, b=60),
+                xaxis=dict(title="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
+                          tickfont=dict(size=11, color=C["font"])),
+                yaxis=dict(title=("OI Change" if "Signed" in oi_chg_mode else "|OI Change|") + " (contracts)",
+                          showgrid=True, gridcolor=C["grid"], zeroline=("Signed" in oi_chg_mode),
+                          zerolinecolor="rgba(0,0,0,0.25)", tickfont=dict(size=11, color=C["font"])),
+                legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0,
+                           bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            )
+            st.plotly_chart(fig_sc, use_container_width=True)
+            st.caption(
+                f"Each point is one trading day for {current_contract}. R² of {r2:.2f} means "
+                f"{'a real relationship' if r2 > 0.3 else 'a weak-to-no relationship'} between "
+                "that day's Volume and its OI change over this window."
+            )
+
     # ── Daily OI & Volume by Contract Month (HTML table) ────────────────────
     with st.expander("Daily OI & Volume by Contract Month", expanded=False):
         table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
