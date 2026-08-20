@@ -562,7 +562,7 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_vol, tab_flow = st.tabs(["OI Progression", "Volume", "OI Flow"])
+tab_oi, tab_vol, tab_flow, tab_grid = st.tabs(["OI Progression", "Volume", "OI Flow", "Daily Grid"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -927,7 +927,6 @@ with tab_flow:
 
     curr_flow = df_month[df_month["ice_symbol"] == current_contract].sort_values("Date").copy()
     curr_flow["oi_change"] = curr_flow["open_interest"].diff()
-    curr_flow["px_change"] = curr_flow["settlement"].pct_change() * 100
     curr_flow = curr_flow.dropna(subset=["oi_change"])
 
     cutoff_flow = curr_flow["Date"].max() - pd.Timedelta(days=flow_lookback) if not curr_flow.empty else None
@@ -1042,78 +1041,16 @@ with tab_flow:
             )
             st.plotly_chart(fig_sc, use_container_width=True)
 
-        # ── Quadrant scatter: Price Change vs OI Change, bubble = Volume ─────
-        st.markdown("#### Price Change vs OI Change — bubble size = Volume")
-        pq = flow_win.dropna(subset=["px_change"])
 
-        if len(pq) < 5:
-            st.info("Not enough days in this window for a quadrant scatter.")
-        else:
-            # x = OI change, y = Price change % (both requested explicitly).
-            xq, yq, vq = pq["oi_change"].values, pq["px_change"].values, pq["volume"].values
-            x_absmax = float(np.abs(xq).max()) or 1.0
-            y_absmax = float(np.abs(yq).max()) or 1.0
-            vmax = float(vq.max()) or 1.0
-            # Bubble area (not radius) scales with volume — radius scaling
-            # exaggerates the visual difference between days.
-            sizes = 8 + (vq / vmax) ** 0.5 * 34
-
-            fig_q = go.Figure()
-            # Quadrant shading + labels — x is OI change, y is Price change %,
-            # so "New Longs" (price up + OI up) is top-right, etc.
-            fig_q.add_shape(type="rect", x0=0, x1=x_absmax*1.08, y0=0, y1=y_absmax*1.08,
-                            fillcolor="rgba(22,163,74,0.06)", line_width=0, layer="below")
-            fig_q.add_shape(type="rect", x0=-x_absmax*1.08, x1=0, y0=0, y1=y_absmax*1.08,
-                            fillcolor="rgba(22,163,74,0.05)", line_width=0, layer="below")
-            fig_q.add_shape(type="rect", x0=-x_absmax*1.08, x1=0, y0=-y_absmax*1.08, y1=0,
-                            fillcolor="rgba(220,38,38,0.06)", line_width=0, layer="below")
-            fig_q.add_shape(type="rect", x0=0, x1=x_absmax*1.08, y0=-y_absmax*1.08, y1=0,
-                            fillcolor="rgba(220,38,38,0.05)", line_width=0, layer="below")
-            fig_q.add_annotation(x=x_absmax*0.97, y=y_absmax*0.97, text="New Longs",
-                                 showarrow=False, font=dict(size=10, color="#16a34a"), xanchor="right")
-            fig_q.add_annotation(x=-x_absmax*0.97, y=y_absmax*0.97, text="Short Covering",
-                                 showarrow=False, font=dict(size=10, color="#16a34a"), xanchor="left")
-            fig_q.add_annotation(x=-x_absmax*0.97, y=-y_absmax*0.97, text="Long Liquidation",
-                                 showarrow=False, font=dict(size=10, color="#dc2626"), xanchor="left")
-            fig_q.add_annotation(x=x_absmax*0.97, y=-y_absmax*0.97, text="New Shorts",
-                                 showarrow=False, font=dict(size=10, color="#dc2626"), xanchor="right")
-
-            fig_q.add_trace(go.Scatter(
-                x=xq, y=yq, mode="markers",
-                marker=dict(size=sizes, color="#4A7FD4", opacity=0.55,
-                           line=dict(color="white", width=1)),
-                name="Daily obs", showlegend=False,
-                customdata=np.stack([pq["Date"].dt.strftime("%b %d, %Y"), vq], axis=-1),
-                hovertemplate="<b>%{customdata[0]}</b><br>OI Δ: %{x:+,.0f}<br>Px Δ: %{y:+,.2f}%"
-                             "<br>Volume: %{customdata[1]:,.0f}<extra></extra>",
-            ))
-            fig_q.add_trace(go.Scatter(
-                x=[xq[-1]], y=[yq[-1]], mode="markers",
-                marker=dict(color="#f59e0b", size=13, symbol="star",
-                           line=dict(color="white", width=1)),
-                name=f"Latest ({pq['Date'].iloc[-1].strftime('%b %d, %Y')})",
-            ))
-            fig_q.update_layout(
-                height=460, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
-                font=dict(color=C["font"], family="Inter, sans-serif"),
-                margin=dict(l=60, r=30, t=20, b=60),
-                xaxis=dict(title="OI Change (contracts)", showgrid=True, gridcolor=C["grid"],
-                          zeroline=True, zerolinecolor="rgba(0,0,0,0.3)", zerolinewidth=1,
-                          range=[-x_absmax*1.08, x_absmax*1.08], tickfont=dict(size=11, color=C["font"])),
-                yaxis=dict(title="Price Change %", showgrid=True, gridcolor=C["grid"],
-                          zeroline=True, zerolinecolor="rgba(0,0,0,0.3)", zerolinewidth=1,
-                          range=[-y_absmax*1.08, y_absmax*1.08], tickfont=dict(size=11, color=C["font"])),
-                legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
-                           bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-            )
-            st.plotly_chart(fig_q, use_container_width=True)
-
-    # ── Daily OI & Volume by Contract Month (HTML table) ────────────────────
-    with st.expander("Daily OI & Volume by Contract Month", expanded=False):
-        table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
-                                   key="oi_table_lookback")
-        html = build_oi_vol_table_html(commodity, table_lookback, mt)
-        if html is None:
-            st.info("No data in this window.")
-        else:
-            st.markdown(html, unsafe_allow_html=True)
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — DAILY GRID (OI level / OI change / Volume / Px change, per contract month)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_grid:
+    st.markdown(f"### {COMMODITIES[commodity][1]}  |  Daily OI & Volume by Contract Month")
+    table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
+                               key="oi_table_lookback")
+    html = build_oi_vol_table_html(commodity, table_lookback, mt)
+    if html is None:
+        st.info("No data in this window.")
+    else:
+        st.markdown(html, unsafe_allow_html=True)
