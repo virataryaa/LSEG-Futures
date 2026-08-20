@@ -344,6 +344,148 @@ def add_oi_traces(fig, band, curr_df, current_sym, oi_fmt,
         hovertemplate=f"<b>{latest['Date'].strftime('%b %d, %Y')}</b><br>OI:{latest['open_interest']:{oi_fmt}}<extra></extra>"), **kw)
 
 
+# ── Daily OI/Volume-by-contract-month table (cached — building this HTML by
+# hand for every row/column was the single most expensive uncached thing on
+# the page, and it re-ran on every widget change anywhere in the app since
+# Streamlit executes every tab's body on every rerun, not just the visible
+# one) ──────────────────────────────────────────────────────────────────────
+def _safe(v, default=1.0):
+    v = float(v) if pd.notna(v) else default
+    return v if v > 0 else default
+
+def _oi_heatmap_style(v, vmin, vmax):
+    if pd.isna(v):
+        return ""
+    vmin = float(vmin) if pd.notna(vmin) else 0.0
+    vmax = float(vmax) if pd.notna(vmax) else vmin + 1.0
+    span = vmax - vmin
+    t = min(max((float(v) - vmin) / span, 0.0), 1.0) if span > 0 else 0.0
+    # White -> a medium, still-readable green (not near-black at the top end).
+    r = round(255 + t * (150 - 255))
+    g = round(255 + t * (200 - 255))
+    b = round(255 + t * (165 - 255))
+    return f"background-color:rgb({r},{g},{b});color:#1a1a1a"
+
+def _bar_style(v, vmax, color):
+    if pd.isna(v) or v == 0:
+        return ""
+    pct = min(abs(float(v)) / _safe(vmax), 1.0) * 100
+    return f"background:linear-gradient(to right, {color} {pct:.1f}%, transparent {pct:.1f}%)"
+
+def _oi_chg_style(v, vmax):
+    if pd.isna(v):
+        return ""
+    color = "rgba(22,163,74,0.55)" if v >= 0 else "rgba(220,38,38,0.55)"
+    return _bar_style(v, vmax, color)
+
+def _vol_style(v, vmax):
+    return _bar_style(v, vmax, "rgba(56,189,248,0.55)")
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 0.0):
+    """Returns the full HTML string for the OI/Volume-by-contract-month table,
+    or None if there's no data in the window."""
+    df_all_tbl = load_data(commodity, mtime).sort_values(["ice_symbol", "Date"])
+    df_all_tbl["oi_change"] = df_all_tbl.groupby("ice_symbol")["open_interest"].diff()
+    df_all_tbl["px_change"] = df_all_tbl.groupby("ice_symbol")["settlement"].diff()
+
+    max_date_tbl = df_all_tbl["Date"].max()
+    cutoff_tbl   = max_date_tbl - pd.Timedelta(days=table_lookback)
+    win_tbl      = df_all_tbl[df_all_tbl["Date"] >= cutoff_tbl].copy()
+
+    if win_tbl.empty:
+        return None
+
+    # Every contract month with any OI in the window — sorted near-to-far expiry.
+    ltd_map  = win_tbl.groupby("ice_symbol")["LTD"].first()
+    syms_tbl = ltd_map.sort_values().index.tolist()
+    dates_tbl = sorted(win_tbl["Date"].unique(), reverse=True)
+
+    oi_piv  = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last")
+               .reindex(index=dates_tbl, columns=syms_tbl))
+    chg_piv = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="oi_change", aggfunc="last")
+               .reindex(index=dates_tbl, columns=syms_tbl))
+    vol_piv = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="volume", aggfunc="last")
+               .reindex(index=dates_tbl, columns=syms_tbl))
+    px_piv  = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="px_change", aggfunc="last")
+               .reindex(index=dates_tbl, columns=syms_tbl))
+
+    # min_count=1: a date where every contract's OI change is null sums to
+    # NaN, not a misleading 0 (same lesson as the Options project's OI bug).
+    total_chg = chg_piv.sum(axis=1, min_count=1)
+    total_vol = vol_piv.sum(axis=1, min_count=1)
+
+    # Per-column scaling — a front-month contract's OI/volume dwarfs a
+    # far-month one, so a single table-wide scale would make every far-month
+    # cell look flat. Each contract's heatmap/bars are scaled to its own range.
+    oi_col_min  = oi_piv.min(axis=0)
+    oi_col_max  = oi_piv.max(axis=0)
+    chg_col_max = chg_piv.abs().max(axis=0)
+    vol_col_max = vol_piv.max(axis=0)
+    px_col_max  = px_piv.abs().max(axis=0)
+    total_chg_absmax = float(total_chg.abs().max()) if total_chg.notna().any() else 1.0
+    total_vol_max    = float(total_vol.max())        if total_vol.notna().any() else 1.0
+    total_chg_absmax = total_chg_absmax if total_chg_absmax > 0 else 1.0
+    total_vol_max    = total_vol_max    if total_vol_max    > 0 else 1.0
+
+    css = """
+    <style>
+    .oivol-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
+    .oivol-tbl { border-collapse:collapse; font-size:11px; font-family:'Inter',sans-serif; white-space:nowrap; }
+    .oivol-tbl th, .oivol-tbl td { padding:4px 7px; text-align:right; border-bottom:1px solid #f0f0f0; }
+    .oivol-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2; }
+    .oivol-tbl .grp-h { background:#eef2f7; }
+    .oivol-tbl .grp-start { border-left:2px solid #555b66; }
+    .oivol-tbl .date-cell { position:sticky; left:0; background:#fff; text-align:left;
+                             font-weight:600; z-index:1; border-right:2px solid #555b66; }
+    .oivol-tbl .tot-cell { background:#fffbea; font-weight:600; }
+    .oivol-tbl .sub-h { color:#888; font-weight:400; font-size:10px; }
+    </style>
+    """
+
+    h1 = '<tr><th class="date-cell" rowspan="2">Date</th>'
+    for s in syms_tbl:
+        h1 += f'<th class="grp-h grp-start" colspan="4">{s}</th>'
+    h1 += '<th class="tot-cell grp-start" colspan="2">Total</th></tr>'
+
+    h2 = "<tr>"
+    for s in syms_tbl:
+        h2 += ('<th class="sub-h grp-h grp-start">OI</th>'
+               '<th class="sub-h grp-h">ΔOI</th>'
+               '<th class="sub-h grp-h">Vol</th>'
+               '<th class="sub-h grp-h">PxΔ</th>')
+    h2 += '<th class="sub-h tot-cell grp-start">ΔOI</th><th class="sub-h tot-cell">Vol</th></tr>'
+
+    rows = []
+    for d in dates_tbl:
+        d_str = pd.Timestamp(d).strftime("%d %b %Y")
+        row = f'<tr><td class="date-cell">{d_str}</td>'
+        for s in syms_tbl:
+            oi_v  = oi_piv.at[d, s]
+            chg_v = chg_piv.at[d, s]
+            vol_v = vol_piv.at[d, s]
+            px_v  = px_piv.at[d, s]
+            oi_txt  = f"{oi_v:,.0f}"  if pd.notna(oi_v)  else ""
+            chg_txt = f"{chg_v:+,.0f}" if pd.notna(chg_v) else ""
+            vol_txt = f"{vol_v:,.0f}" if pd.notna(vol_v) else ""
+            px_txt  = f"{px_v:+,.2f}" if pd.notna(px_v)  else ""
+            row += f'<td class="grp-start" style="{_oi_heatmap_style(oi_v, oi_col_min[s], oi_col_max[s])}">{oi_txt}</td>'
+            row += f'<td style="{_oi_chg_style(chg_v, chg_col_max[s])}">{chg_txt}</td>'
+            row += f'<td style="{_vol_style(vol_v, vol_col_max[s])}">{vol_txt}</td>'
+            row += f'<td style="{_oi_chg_style(px_v, px_col_max[s])}">{px_txt}</td>'
+        tc, tv = total_chg.loc[d], total_vol.loc[d]
+        tc_txt = f"{tc:+,.0f}" if pd.notna(tc) else ""
+        tv_txt = f"{tv:,.0f}"  if pd.notna(tv) else ""
+        row += f'<td class="tot-cell grp-start" style="{_oi_chg_style(tc, total_chg_absmax)}">{tc_txt}</td>'
+        row += f'<td class="tot-cell" style="{_vol_style(tv, total_vol_max)}">{tv_txt}</td>'
+        row += "</tr>"
+        rows.append(row)
+
+    return (css + f'<div class="oivol-wrap"><table class="oivol-tbl"><thead>{h1}{h2}</thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## Settings")
@@ -834,11 +976,11 @@ with tab_flow:
         # ── Scatter: Volume vs OI Change ─────────────────────────────────────
         st.markdown("#### Volume vs OI Change — Scatter")
         oi_chg_mode = st.radio(
-            "OI Δ", ["Signed (Recommended)", "Absolute"], horizontal=True,
+            "OI Δ", ["Signed", "Absolute"], horizontal=True,
             key="flow_scatter_mode",
         )
-        y_scatter = flow_win["oi_change"] if "Signed" in oi_chg_mode else flow_win["oi_change"].abs()
-        x_scatter = flow_win["volume"]
+        x_scatter = flow_win["oi_change"] if oi_chg_mode == "Signed" else flow_win["oi_change"].abs()
+        y_scatter = flow_win["volume"]
 
         if len(flow_win) < 5:
             st.info("Not enough days in this window for a scatter.")
@@ -848,8 +990,8 @@ with tab_flow:
             r2 = np.corrcoef(xs, ys)[0, 1] ** 2
             x_line = np.array([xs.min(), xs.max()])
 
-            if "Signed" in oi_chg_mode:
-                pt_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in ys]
+            if oi_chg_mode == "Signed":
+                pt_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in xs]
             else:
                 pt_colors = "#4A7FD4"
 
@@ -860,7 +1002,7 @@ with tab_flow:
                            line=dict(color="white", width=0.8)),
                 name="Daily obs", showlegend=False,
                 customdata=flow_win["Date"].dt.strftime("%b %d, %Y"),
-                hovertemplate="<b>%{customdata}</b><br>Volume: %{x:,.0f}<br>OI Δ: %{y:+,.0f}<extra></extra>",
+                hovertemplate="<b>%{customdata}</b><br>OI Δ: %{x:+,.0f}<br>Volume: %{y:,.0f}<extra></extra>",
             ))
             fig_sc.add_trace(go.Scatter(
                 x=x_line, y=slope * x_line + intercept, mode="lines",
@@ -877,11 +1019,11 @@ with tab_flow:
                 height=440, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
                 font=dict(color=C["font"], family="Inter, sans-serif"),
                 margin=dict(l=60, r=30, t=20, b=60),
-                xaxis=dict(title="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
-                          tickfont=dict(size=11, color=C["font"])),
-                yaxis=dict(title=("OI Change" if "Signed" in oi_chg_mode else "|OI Change|") + " (contracts)",
-                          showgrid=True, gridcolor=C["grid"], zeroline=("Signed" in oi_chg_mode),
+                xaxis=dict(title=("OI Change" if oi_chg_mode == "Signed" else "|OI Change|") + " (contracts)",
+                          showgrid=True, gridcolor=C["grid"], zeroline=(oi_chg_mode == "Signed"),
                           zerolinecolor="rgba(0,0,0,0.25)", tickfont=dict(size=11, color=C["font"])),
+                yaxis=dict(title="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
+                          tickfont=dict(size=11, color=C["font"])),
                 legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0,
                            bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             )
@@ -891,127 +1033,8 @@ with tab_flow:
     with st.expander("Daily OI & Volume by Contract Month", expanded=False):
         table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
                                    key="oi_table_lookback")
-
-        df_all_tbl = load_data(commodity, mt).sort_values(["ice_symbol", "Date"])
-        df_all_tbl["oi_change"] = df_all_tbl.groupby("ice_symbol")["open_interest"].diff()
-
-        max_date_tbl = df_all_tbl["Date"].max()
-        cutoff_tbl   = max_date_tbl - pd.Timedelta(days=table_lookback)
-        win_tbl      = df_all_tbl[df_all_tbl["Date"] >= cutoff_tbl].copy()
-
-        if win_tbl.empty:
+        html = build_oi_vol_table_html(commodity, table_lookback, mt)
+        if html is None:
             st.info("No data in this window.")
         else:
-            # Every contract month with any OI in the window — sorted near-to-far expiry.
-            ltd_map  = win_tbl.groupby("ice_symbol")["LTD"].first()
-            syms_tbl = ltd_map.sort_values().index.tolist()
-            dates_tbl = sorted(win_tbl["Date"].unique(), reverse=True)
-
-            oi_piv  = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last")
-                       .reindex(index=dates_tbl, columns=syms_tbl))
-            chg_piv = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="oi_change", aggfunc="last")
-                       .reindex(index=dates_tbl, columns=syms_tbl))
-            vol_piv = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="volume", aggfunc="last")
-                       .reindex(index=dates_tbl, columns=syms_tbl))
-
-            # min_count=1: a date where every contract's OI change is null sums to
-            # NaN, not a misleading 0 (same lesson as the Options project's OI bug).
-            total_chg = chg_piv.sum(axis=1, min_count=1)
-            total_vol = vol_piv.sum(axis=1, min_count=1)
-
-            # Per-column scaling — a front-month contract's OI/volume dwarfs a
-            # far-month one, so a single table-wide scale would make every
-            # far-month cell look flat. Each contract's heatmap/bars are scaled
-            # to its own range instead.
-            oi_col_min  = oi_piv.min(axis=0)
-            oi_col_max  = oi_piv.max(axis=0)
-            chg_col_max = chg_piv.abs().max(axis=0)
-            vol_col_max = vol_piv.max(axis=0)
-            total_chg_absmax = float(total_chg.abs().max()) if total_chg.notna().any() else 1.0
-            total_vol_max    = float(total_vol.max())        if total_vol.notna().any() else 1.0
-            total_chg_absmax = total_chg_absmax if total_chg_absmax > 0 else 1.0
-            total_vol_max    = total_vol_max    if total_vol_max    > 0 else 1.0
-
-            def _safe(v, default=1.0):
-                v = float(v) if pd.notna(v) else default
-                return v if v > 0 else default
-
-            def _oi_heatmap_style(v, vmin, vmax):
-                if pd.isna(v):
-                    return ""
-                vmin = float(vmin) if pd.notna(vmin) else 0.0
-                vmax = float(vmax) if pd.notna(vmax) else vmin + 1.0
-                span = vmax - vmin
-                t = min(max((float(v) - vmin) / span, 0.0), 1.0) if span > 0 else 0.0
-                r = round(255 + t * (10 - 255))
-                g = round(255 + t * (90 - 255))
-                b = round(255 + t * (50 - 255))
-                txt = "#ffffff" if t > 0.55 else "#1a1a1a"
-                return f"background-color:rgb({r},{g},{b});color:{txt}"
-
-            def _bar_style(v, vmax, color):
-                if pd.isna(v) or v == 0:
-                    return ""
-                pct = min(abs(float(v)) / _safe(vmax), 1.0) * 100
-                return f"background:linear-gradient(to right, {color} {pct:.1f}%, transparent {pct:.1f}%)"
-
-            def _oi_chg_style(v, vmax):
-                if pd.isna(v):
-                    return ""
-                color = "rgba(22,163,74,0.55)" if v >= 0 else "rgba(220,38,38,0.55)"
-                return _bar_style(v, vmax, color)
-
-            def _vol_style(v, vmax):
-                return _bar_style(v, vmax, "rgba(56,189,248,0.55)")
-
-            css = """
-            <style>
-            .oivol-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
-            .oivol-tbl { border-collapse:collapse; font-size:11px; font-family:'Inter',sans-serif; white-space:nowrap; }
-            .oivol-tbl th, .oivol-tbl td { padding:4px 7px; text-align:right; border-bottom:1px solid #f0f0f0; }
-            .oivol-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2; }
-            .oivol-tbl .grp-h { background:#eef2f7; border-left:1px solid #d9dee6; }
-            .oivol-tbl .date-cell { position:sticky; left:0; background:#fff; text-align:left;
-                                     font-weight:600; z-index:1; border-right:1px solid #e5e7eb; }
-            .oivol-tbl .tot-cell { background:#fffbea; font-weight:600; border-left:2px solid #f3d98b; }
-            .oivol-tbl .sub-h { color:#888; font-weight:400; font-size:10px; }
-            </style>
-            """
-
-            h1 = '<tr><th class="date-cell" rowspan="2">Date</th>'
-            for s in syms_tbl:
-                h1 += f'<th class="grp-h" colspan="3">{s}</th>'
-            h1 += '<th class="tot-cell" colspan="2">Total</th></tr>'
-
-            h2 = "<tr>"
-            for s in syms_tbl:
-                h2 += ('<th class="sub-h grp-h">OI</th>'
-                       '<th class="sub-h grp-h">ΔOI</th>'
-                       '<th class="sub-h grp-h">Vol</th>')
-            h2 += '<th class="sub-h tot-cell">ΔOI</th><th class="sub-h tot-cell">Vol</th></tr>'
-
-            rows = []
-            for d in dates_tbl:
-                d_str = pd.Timestamp(d).strftime("%d %b %Y")
-                row = f'<tr><td class="date-cell">{d_str}</td>'
-                for s in syms_tbl:
-                    oi_v  = oi_piv.at[d, s]
-                    chg_v = chg_piv.at[d, s]
-                    vol_v = vol_piv.at[d, s]
-                    oi_txt  = f"{oi_v:,.0f}"  if pd.notna(oi_v)  else ""
-                    chg_txt = f"{chg_v:+,.0f}" if pd.notna(chg_v) else ""
-                    vol_txt = f"{vol_v:,.0f}" if pd.notna(vol_v) else ""
-                    row += f'<td style="{_oi_heatmap_style(oi_v, oi_col_min[s], oi_col_max[s])}">{oi_txt}</td>'
-                    row += f'<td style="{_oi_chg_style(chg_v, chg_col_max[s])}">{chg_txt}</td>'
-                    row += f'<td style="{_vol_style(vol_v, vol_col_max[s])}">{vol_txt}</td>'
-                tc, tv = total_chg.loc[d], total_vol.loc[d]
-                tc_txt = f"{tc:+,.0f}" if pd.notna(tc) else ""
-                tv_txt = f"{tv:,.0f}"  if pd.notna(tv) else ""
-                row += f'<td class="tot-cell" style="{_oi_chg_style(tc, total_chg_absmax)}">{tc_txt}</td>'
-                row += f'<td class="tot-cell" style="{_vol_style(tv, total_vol_max)}">{tv_txt}</td>'
-                row += "</tr>"
-                rows.append(row)
-
-            html = (css + f'<div class="oivol-wrap"><table class="oivol-tbl"><thead>{h1}{h2}</thead>'
-                    f'<tbody>{"".join(rows)}</tbody></table></div>')
             st.markdown(html, unsafe_allow_html=True)
