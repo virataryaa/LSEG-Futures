@@ -836,10 +836,6 @@ with tab_flow:
         oi_chg_mode = st.radio(
             "OI Δ", ["Signed (Recommended)", "Absolute"], horizontal=True,
             key="flow_scatter_mode",
-            help="Signed: keeps direction, so you can see whether high-volume days "
-                 "tend to build or unwind OI. Absolute: |OI change| vs Volume, useful "
-                 "for spotting high-churn days — big volume that produced little net "
-                 "position change (points far below a 45° line)."
         )
         y_scatter = flow_win["oi_change"] if "Signed" in oi_chg_mode else flow_win["oi_change"].abs()
         x_scatter = flow_win["volume"]
@@ -890,11 +886,6 @@ with tab_flow:
                            bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             )
             st.plotly_chart(fig_sc, use_container_width=True)
-            st.caption(
-                f"Each point is one trading day for {current_contract}. R² of {r2:.2f} means "
-                f"{'a real relationship' if r2 > 0.3 else 'a weak-to-no relationship'} between "
-                "that day's Volume and its OI change over this window."
-            )
 
     # ── Daily OI & Volume by Contract Month (HTML table) ────────────────────
     with st.expander("Daily OI & Volume by Contract Month", expanded=False):
@@ -928,30 +919,50 @@ with tab_flow:
             total_chg = chg_piv.sum(axis=1, min_count=1)
             total_vol = vol_piv.sum(axis=1, min_count=1)
 
-            chg_vals = chg_piv.to_numpy(dtype=float)
-            chg_absmax = float(np.nanmax(np.abs(chg_vals))) if np.isfinite(chg_vals).any() else 1.0
-            vol_vals = vol_piv.to_numpy(dtype=float)
-            vol_max = float(np.nanmax(vol_vals)) if np.isfinite(vol_vals).any() else 1.0
+            # Per-column scaling — a front-month contract's OI/volume dwarfs a
+            # far-month one, so a single table-wide scale would make every
+            # far-month cell look flat. Each contract's heatmap/bars are scaled
+            # to its own range instead.
+            oi_col_min  = oi_piv.min(axis=0)
+            oi_col_max  = oi_piv.max(axis=0)
+            chg_col_max = chg_piv.abs().max(axis=0)
+            vol_col_max = vol_piv.max(axis=0)
             total_chg_absmax = float(total_chg.abs().max()) if total_chg.notna().any() else 1.0
             total_vol_max    = float(total_vol.max())        if total_vol.notna().any() else 1.0
-            chg_absmax = chg_absmax if chg_absmax > 0 else 1.0
-            vol_max    = vol_max    if vol_max    > 0 else 1.0
             total_chg_absmax = total_chg_absmax if total_chg_absmax > 0 else 1.0
             total_vol_max    = total_vol_max    if total_vol_max    > 0 else 1.0
 
-            def _oi_chg_style(v, vmax):
+            def _safe(v, default=1.0):
+                v = float(v) if pd.notna(v) else default
+                return v if v > 0 else default
+
+            def _oi_heatmap_style(v, vmin, vmax):
+                if pd.isna(v):
+                    return ""
+                vmin = float(vmin) if pd.notna(vmin) else 0.0
+                vmax = float(vmax) if pd.notna(vmax) else vmin + 1.0
+                span = vmax - vmin
+                t = min(max((float(v) - vmin) / span, 0.0), 1.0) if span > 0 else 0.0
+                r = round(255 + t * (10 - 255))
+                g = round(255 + t * (90 - 255))
+                b = round(255 + t * (50 - 255))
+                txt = "#ffffff" if t > 0.55 else "#1a1a1a"
+                return f"background-color:rgb({r},{g},{b});color:{txt}"
+
+            def _bar_style(v, vmax, color):
                 if pd.isna(v) or v == 0:
                     return ""
-                inten = min(abs(v) / vmax, 1.0)
-                if v > 0:
-                    return f"background-color:rgba(22,163,74,{0.12+inten*0.45:.2f});color:#0f3d1f"
-                return f"background-color:rgba(220,38,38,{0.12+inten*0.45:.2f});color:#4a0d0d"
+                pct = min(abs(float(v)) / _safe(vmax), 1.0) * 100
+                return f"background:linear-gradient(to right, {color} {pct:.1f}%, transparent {pct:.1f}%)"
+
+            def _oi_chg_style(v, vmax):
+                if pd.isna(v):
+                    return ""
+                color = "rgba(22,163,74,0.55)" if v >= 0 else "rgba(220,38,38,0.55)"
+                return _bar_style(v, vmax, color)
 
             def _vol_style(v, vmax):
-                if pd.isna(v) or v == 0:
-                    return ""
-                inten = min(v / vmax, 1.0)
-                return f"background-color:rgba(107,114,128,{0.06+inten*0.30:.2f})"
+                return _bar_style(v, vmax, "rgba(56,189,248,0.55)")
 
             css = """
             <style>
@@ -990,9 +1001,9 @@ with tab_flow:
                     oi_txt  = f"{oi_v:,.0f}"  if pd.notna(oi_v)  else ""
                     chg_txt = f"{chg_v:+,.0f}" if pd.notna(chg_v) else ""
                     vol_txt = f"{vol_v:,.0f}" if pd.notna(vol_v) else ""
-                    row += f"<td>{oi_txt}</td>"
-                    row += f'<td style="{_oi_chg_style(chg_v, chg_absmax)}">{chg_txt}</td>'
-                    row += f'<td style="{_vol_style(vol_v, vol_max)}">{vol_txt}</td>'
+                    row += f'<td style="{_oi_heatmap_style(oi_v, oi_col_min[s], oi_col_max[s])}">{oi_txt}</td>'
+                    row += f'<td style="{_oi_chg_style(chg_v, chg_col_max[s])}">{chg_txt}</td>'
+                    row += f'<td style="{_vol_style(vol_v, vol_col_max[s])}">{vol_txt}</td>'
                 tc, tv = total_chg.loc[d], total_vol.loc[d]
                 tc_txt = f"{tc:+,.0f}" if pd.notna(tc) else ""
                 tv_txt = f"{tv:,.0f}"  if pd.notna(tv) else ""
@@ -1004,9 +1015,3 @@ with tab_flow:
             html = (css + f'<div class="oivol-wrap"><table class="oivol-tbl"><thead>{h1}{h2}</thead>'
                     f'<tbody>{"".join(rows)}</tbody></table></div>')
             st.markdown(html, unsafe_allow_html=True)
-            st.caption(
-                f"{len(syms_tbl)} contract months, {len(dates_tbl)} trading days. "
-                "ΔOI and Volume cells shaded by magnitude (green = OI up, red = OI down, "
-                "grey = volume). Total columns sum OI Δ and Volume across every contract "
-                "month shown for that date."
-            )
