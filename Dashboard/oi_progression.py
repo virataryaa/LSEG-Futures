@@ -446,15 +446,18 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
     css = """
     <style>
     .oivol-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
-    .oivol-tbl { border-collapse:collapse; font-size:11px; font-family:'Inter',sans-serif; white-space:nowrap; }
-    .oivol-tbl th, .oivol-tbl td { padding:4px 7px; text-align:right; border-bottom:1px solid #f0f0f0; }
+    .oivol-tbl { border-collapse:collapse; font-size:9px; font-family:'Inter',sans-serif; white-space:nowrap; }
+    .oivol-tbl th, .oivol-tbl td { padding:2px 5px; text-align:center; border-bottom:1px solid #f0f0f0; }
     .oivol-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2; }
     .oivol-tbl .grp-h { background:#eef2f7; }
-    .oivol-tbl .grp-start { border-left:2px solid #555b66; }
-    .oivol-tbl .date-cell { position:sticky; left:0; background:#fff; text-align:left;
-                             font-weight:600; z-index:1; border-right:2px solid #555b66; }
+    /* box-shadow instead of border-left: border-collapse silently drops
+       adjacent-cell borders depending on which side "wins" the merge, but
+       box-shadow isn't part of the border-collapse model so it always shows. */
+    .oivol-tbl .grp-start { box-shadow: inset 2px 0 0 0 #374151; }
+    .oivol-tbl .date-cell { position:sticky; left:0; background:#fff; text-align:center;
+                             font-weight:600; z-index:1; box-shadow: inset -2px 0 0 0 #374151; }
     .oivol-tbl .tot-cell { background:#fffbea; font-weight:600; }
-    .oivol-tbl .sub-h { color:#888; font-weight:400; font-size:10px; }
+    .oivol-tbl .sub-h { color:#888; font-weight:400; font-size:8px; }
     </style>
     """
 
@@ -467,8 +470,8 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
     for s in syms_tbl:
         h2 += ('<th class="sub-h grp-h grp-start">OI</th>'
                '<th class="sub-h grp-h">ΔOI</th>'
-               '<th class="sub-h grp-h">Vol</th>'
-               '<th class="sub-h grp-h">PxΔ%</th>')
+               '<th class="sub-h grp-h">PxΔ%</th>'
+               '<th class="sub-h grp-h">Vol</th>')
     h2 += '<th class="sub-h tot-cell grp-start">ΔOI</th><th class="sub-h tot-cell">Vol</th></tr>'
 
     rows = []
@@ -486,8 +489,8 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
             px_txt  = f"{px_v:+.2f}%" if pd.notna(px_v)  else ""
             row += f'<td class="grp-start" style="{_oi_heatmap_style(oi_v, oi_col_min[s], oi_col_max[s])}">{oi_txt}</td>'
             row += f'<td style="{_oi_chg_style(chg_v, chg_col_max[s])}">{chg_txt}</td>'
-            row += f'<td style="{_vol_style(vol_v, vol_col_max[s])}">{vol_txt}</td>'
             row += f'<td style="{_oi_chg_style(px_v, px_col_max[s])}">{px_txt}</td>'
+            row += f'<td style="{_vol_style(vol_v, vol_col_max[s])}">{vol_txt}</td>'
         tc, tv = total_chg.loc[d], total_vol.loc[d]
         tc_txt = f"{tc:+,.0f}" if pd.notna(tc) else ""
         tv_txt = f"{tv:,.0f}"  if pd.notna(tv) else ""
