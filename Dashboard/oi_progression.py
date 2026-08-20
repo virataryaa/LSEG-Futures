@@ -940,14 +940,12 @@ with tab_flow:
         latest_change = latest_flow["oi_change"]
         latest_vol    = latest_flow["volume"]
         turnover      = (latest_vol / abs(latest_change)) if latest_change else float("nan")
-        net_flow_win  = flow_win["oi_change"].sum()
 
         kpi_row([
             ("Contract",        current_contract),
             ("Latest OI Chg",   f"{latest_change:+,.0f}"),
             ("Latest Volume",   f"{latest_vol:,.0f}"),
             ("As of",           latest_flow["Date"].strftime("%b %d, %Y")),
-            (f"Net OI Chg ({flow_lookback}d)", f"{net_flow_win:+,.0f}"),
         ])
 
         bar_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in flow_win["oi_change"]]
