@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -764,14 +765,6 @@ with tab_vol:
 with tab_flow:
     month_name = MONTH_NAMES.get(selected_month, selected_month)
     st.markdown(f"### {current_contract}  |  Daily OI Change vs Volume")
-    st.caption(
-        "Green/red bars = day-over-day change in Open Interest (left axis) — "
-        "positive means new positions opened, negative means positions closed. "
-        "Grey bars = that day's Volume (right axis, background). Reading the two "
-        "together tells you *why* volume happened: high volume with OI rising is "
-        "fresh positioning; high volume with OI falling is unwind/short-covering, "
-        "not new interest — a plain volume chart can't tell those apart."
-    )
 
     flow_lookback = st.slider("Lookback (calendar days)", 30, 365, 120, step=10,
                               key="flow_lookback")
@@ -837,3 +830,118 @@ with tab_flow:
             hovermode="x unified", height=500, margin=dict(l=70, r=60, t=60, b=90),
         )
         st.plotly_chart(fig_flow, use_container_width=True)
+
+    # ── Daily OI & Volume by Contract Month (HTML table) ────────────────────
+    with st.expander("Daily OI & Volume by Contract Month", expanded=False):
+        table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
+                                   key="oi_table_lookback")
+
+        df_all_tbl = load_data(commodity, mt).sort_values(["ice_symbol", "Date"])
+        df_all_tbl["oi_change"] = df_all_tbl.groupby("ice_symbol")["open_interest"].diff()
+
+        max_date_tbl = df_all_tbl["Date"].max()
+        cutoff_tbl   = max_date_tbl - pd.Timedelta(days=table_lookback)
+        win_tbl      = df_all_tbl[df_all_tbl["Date"] >= cutoff_tbl].copy()
+
+        if win_tbl.empty:
+            st.info("No data in this window.")
+        else:
+            # Every contract month with any OI in the window — sorted near-to-far expiry.
+            ltd_map  = win_tbl.groupby("ice_symbol")["LTD"].first()
+            syms_tbl = ltd_map.sort_values().index.tolist()
+            dates_tbl = sorted(win_tbl["Date"].unique(), reverse=True)
+
+            oi_piv  = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last")
+                       .reindex(index=dates_tbl, columns=syms_tbl))
+            chg_piv = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="oi_change", aggfunc="last")
+                       .reindex(index=dates_tbl, columns=syms_tbl))
+            vol_piv = (win_tbl.pivot_table(index="Date", columns="ice_symbol", values="volume", aggfunc="last")
+                       .reindex(index=dates_tbl, columns=syms_tbl))
+
+            # min_count=1: a date where every contract's OI change is null sums to
+            # NaN, not a misleading 0 (same lesson as the Options project's OI bug).
+            total_chg = chg_piv.sum(axis=1, min_count=1)
+            total_vol = vol_piv.sum(axis=1, min_count=1)
+
+            chg_vals = chg_piv.to_numpy(dtype=float)
+            chg_absmax = float(np.nanmax(np.abs(chg_vals))) if np.isfinite(chg_vals).any() else 1.0
+            vol_vals = vol_piv.to_numpy(dtype=float)
+            vol_max = float(np.nanmax(vol_vals)) if np.isfinite(vol_vals).any() else 1.0
+            total_chg_absmax = float(total_chg.abs().max()) if total_chg.notna().any() else 1.0
+            total_vol_max    = float(total_vol.max())        if total_vol.notna().any() else 1.0
+            chg_absmax = chg_absmax if chg_absmax > 0 else 1.0
+            vol_max    = vol_max    if vol_max    > 0 else 1.0
+            total_chg_absmax = total_chg_absmax if total_chg_absmax > 0 else 1.0
+            total_vol_max    = total_vol_max    if total_vol_max    > 0 else 1.0
+
+            def _oi_chg_style(v, vmax):
+                if pd.isna(v) or v == 0:
+                    return ""
+                inten = min(abs(v) / vmax, 1.0)
+                if v > 0:
+                    return f"background-color:rgba(22,163,74,{0.12+inten*0.45:.2f});color:#0f3d1f"
+                return f"background-color:rgba(220,38,38,{0.12+inten*0.45:.2f});color:#4a0d0d"
+
+            def _vol_style(v, vmax):
+                if pd.isna(v) or v == 0:
+                    return ""
+                inten = min(v / vmax, 1.0)
+                return f"background-color:rgba(107,114,128,{0.06+inten*0.30:.2f})"
+
+            css = """
+            <style>
+            .oivol-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
+            .oivol-tbl { border-collapse:collapse; font-size:11px; font-family:'Inter',sans-serif; white-space:nowrap; }
+            .oivol-tbl th, .oivol-tbl td { padding:4px 7px; text-align:right; border-bottom:1px solid #f0f0f0; }
+            .oivol-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2; }
+            .oivol-tbl .grp-h { background:#eef2f7; border-left:1px solid #d9dee6; }
+            .oivol-tbl .date-cell { position:sticky; left:0; background:#fff; text-align:left;
+                                     font-weight:600; z-index:1; border-right:1px solid #e5e7eb; }
+            .oivol-tbl .tot-cell { background:#fffbea; font-weight:600; border-left:2px solid #f3d98b; }
+            .oivol-tbl .sub-h { color:#888; font-weight:400; font-size:10px; }
+            </style>
+            """
+
+            h1 = '<tr><th class="date-cell" rowspan="2">Date</th>'
+            for s in syms_tbl:
+                h1 += f'<th class="grp-h" colspan="3">{s}</th>'
+            h1 += '<th class="tot-cell" colspan="2">Total</th></tr>'
+
+            h2 = "<tr>"
+            for s in syms_tbl:
+                h2 += ('<th class="sub-h grp-h">OI</th>'
+                       '<th class="sub-h grp-h">ΔOI</th>'
+                       '<th class="sub-h grp-h">Vol</th>')
+            h2 += '<th class="sub-h tot-cell">ΔOI</th><th class="sub-h tot-cell">Vol</th></tr>'
+
+            rows = []
+            for d in dates_tbl:
+                d_str = pd.Timestamp(d).strftime("%d %b %Y")
+                row = f'<tr><td class="date-cell">{d_str}</td>'
+                for s in syms_tbl:
+                    oi_v  = oi_piv.at[d, s]
+                    chg_v = chg_piv.at[d, s]
+                    vol_v = vol_piv.at[d, s]
+                    oi_txt  = f"{oi_v:,.0f}"  if pd.notna(oi_v)  else ""
+                    chg_txt = f"{chg_v:+,.0f}" if pd.notna(chg_v) else ""
+                    vol_txt = f"{vol_v:,.0f}" if pd.notna(vol_v) else ""
+                    row += f"<td>{oi_txt}</td>"
+                    row += f'<td style="{_oi_chg_style(chg_v, chg_absmax)}">{chg_txt}</td>'
+                    row += f'<td style="{_vol_style(vol_v, vol_max)}">{vol_txt}</td>'
+                tc, tv = total_chg.loc[d], total_vol.loc[d]
+                tc_txt = f"{tc:+,.0f}" if pd.notna(tc) else ""
+                tv_txt = f"{tv:,.0f}"  if pd.notna(tv) else ""
+                row += f'<td class="tot-cell" style="{_oi_chg_style(tc, total_chg_absmax)}">{tc_txt}</td>'
+                row += f'<td class="tot-cell" style="{_vol_style(tv, total_vol_max)}">{tv_txt}</td>'
+                row += "</tr>"
+                rows.append(row)
+
+            html = (css + f'<div class="oivol-wrap"><table class="oivol-tbl"><thead>{h1}{h2}</thead>'
+                    f'<tbody>{"".join(rows)}</tbody></table></div>')
+            st.markdown(html, unsafe_allow_html=True)
+            st.caption(
+                f"{len(syms_tbl)} contract months, {len(dates_tbl)} trading days. "
+                "ΔOI and Volume cells shaded by magnitude (green = OI up, red = OI down, "
+                "grey = volume). Total columns sum OI Δ and Volume across every contract "
+                "month shown for that date."
+            )
