@@ -372,11 +372,25 @@ def _bar_style(v, vmax, color):
     pct = min(abs(float(v)) / _safe(vmax), 1.0) * 100
     return f"background:linear-gradient(to right, {color} {pct:.1f}%, transparent {pct:.1f}%)"
 
+def _diverging_bar_style(v, vmax, pos_color, neg_color):
+    """Bar grows outward from the cell's center: green to the right for
+    positive values, red to the left for negative — instead of both signs
+    growing from the left edge, which made a small negative and a small
+    positive look like they were on different scales."""
+    if pd.isna(v) or v == 0:
+        return ""
+    half_pct = min(abs(float(v)) / _safe(vmax), 1.0) * 50
+    if v >= 0:
+        lo, hi, color = 50.0, 50.0 + half_pct, pos_color
+    else:
+        lo, hi, color = 50.0 - half_pct, 50.0, neg_color
+    return (f"background:linear-gradient(to right, transparent {lo:.1f}%, "
+            f"{color} {lo:.1f}%, {color} {hi:.1f}%, transparent {hi:.1f}%)")
+
 def _oi_chg_style(v, vmax):
     if pd.isna(v):
         return ""
-    color = "rgba(22,163,74,0.55)" if v >= 0 else "rgba(220,38,38,0.55)"
-    return _bar_style(v, vmax, color)
+    return _diverging_bar_style(v, vmax, "rgba(22,163,74,0.55)", "rgba(220,38,38,0.55)")
 
 def _vol_style(v, vmax):
     return _bar_style(v, vmax, "rgba(56,189,248,0.55)")
@@ -388,7 +402,7 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
     or None if there's no data in the window."""
     df_all_tbl = load_data(commodity, mtime).sort_values(["ice_symbol", "Date"])
     df_all_tbl["oi_change"] = df_all_tbl.groupby("ice_symbol")["open_interest"].diff()
-    df_all_tbl["px_change"] = df_all_tbl.groupby("ice_symbol")["settlement"].diff()
+    df_all_tbl["px_change"] = df_all_tbl.groupby("ice_symbol")["settlement"].pct_change() * 100
 
     max_date_tbl = df_all_tbl["Date"].max()
     cutoff_tbl   = max_date_tbl - pd.Timedelta(days=table_lookback)
@@ -454,7 +468,7 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
         h2 += ('<th class="sub-h grp-h grp-start">OI</th>'
                '<th class="sub-h grp-h">ΔOI</th>'
                '<th class="sub-h grp-h">Vol</th>'
-               '<th class="sub-h grp-h">PxΔ</th>')
+               '<th class="sub-h grp-h">PxΔ%</th>')
     h2 += '<th class="sub-h tot-cell grp-start">ΔOI</th><th class="sub-h tot-cell">Vol</th></tr>'
 
     rows = []
@@ -469,7 +483,7 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
             oi_txt  = f"{oi_v:,.0f}"  if pd.notna(oi_v)  else ""
             chg_txt = f"{chg_v:+,.0f}" if pd.notna(chg_v) else ""
             vol_txt = f"{vol_v:,.0f}" if pd.notna(vol_v) else ""
-            px_txt  = f"{px_v:+,.2f}" if pd.notna(px_v)  else ""
+            px_txt  = f"{px_v:+.2f}%" if pd.notna(px_v)  else ""
             row += f'<td class="grp-start" style="{_oi_heatmap_style(oi_v, oi_col_min[s], oi_col_max[s])}">{oi_txt}</td>'
             row += f'<td style="{_oi_chg_style(chg_v, chg_col_max[s])}">{chg_txt}</td>'
             row += f'<td style="{_vol_style(vol_v, vol_col_max[s])}">{vol_txt}</td>'
@@ -913,6 +927,7 @@ with tab_flow:
 
     curr_flow = df_month[df_month["ice_symbol"] == current_contract].sort_values("Date").copy()
     curr_flow["oi_change"] = curr_flow["open_interest"].diff()
+    curr_flow["px_change"] = curr_flow["settlement"].diff()
     curr_flow = curr_flow.dropna(subset=["oi_change"])
 
     cutoff_flow = curr_flow["Date"].max() - pd.Timedelta(days=flow_lookback) if not curr_flow.empty else None
@@ -1028,6 +1043,70 @@ with tab_flow:
                            bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             )
             st.plotly_chart(fig_sc, use_container_width=True)
+
+        # ── Quadrant scatter: Price Change vs OI Change, bubble = Volume ─────
+        st.markdown("#### Price Change vs OI Change — bubble size = Volume")
+        pq = flow_win.dropna(subset=["px_change"])
+
+        if len(pq) < 5:
+            st.info("Not enough days in this window for a quadrant scatter.")
+        else:
+            xq, yq, vq = pq["px_change"].values, pq["oi_change"].values, pq["volume"].values
+            x_absmax = float(np.abs(xq).max()) or 1.0
+            y_absmax = float(np.abs(yq).max()) or 1.0
+            vmax = float(vq.max()) or 1.0
+            # Bubble area (not radius) scales with volume — radius scaling
+            # exaggerates the visual difference between days.
+            sizes = 8 + (vq / vmax) ** 0.5 * 34
+
+            fig_q = go.Figure()
+            # Quadrant shading + labels
+            fig_q.add_shape(type="rect", x0=0, x1=x_absmax*1.08, y0=0, y1=y_absmax*1.08,
+                            fillcolor="rgba(22,163,74,0.06)", line_width=0, layer="below")
+            fig_q.add_shape(type="rect", x0=-x_absmax*1.08, x1=0, y0=0, y1=y_absmax*1.08,
+                            fillcolor="rgba(220,38,38,0.05)", line_width=0, layer="below")
+            fig_q.add_shape(type="rect", x0=-x_absmax*1.08, x1=0, y0=-y_absmax*1.08, y1=0,
+                            fillcolor="rgba(220,38,38,0.06)", line_width=0, layer="below")
+            fig_q.add_shape(type="rect", x0=0, x1=x_absmax*1.08, y0=-y_absmax*1.08, y1=0,
+                            fillcolor="rgba(22,163,74,0.05)", line_width=0, layer="below")
+            fig_q.add_annotation(x=x_absmax*0.97, y=y_absmax*0.97, text="New Longs",
+                                 showarrow=False, font=dict(size=10, color="#16a34a"), xanchor="right")
+            fig_q.add_annotation(x=-x_absmax*0.97, y=y_absmax*0.97, text="New Shorts",
+                                 showarrow=False, font=dict(size=10, color="#dc2626"), xanchor="left")
+            fig_q.add_annotation(x=-x_absmax*0.97, y=-y_absmax*0.97, text="Long Liquidation",
+                                 showarrow=False, font=dict(size=10, color="#dc2626"), xanchor="left")
+            fig_q.add_annotation(x=x_absmax*0.97, y=-y_absmax*0.97, text="Short Covering",
+                                 showarrow=False, font=dict(size=10, color="#16a34a"), xanchor="right")
+
+            fig_q.add_trace(go.Scatter(
+                x=xq, y=yq, mode="markers",
+                marker=dict(size=sizes, color="#4A7FD4", opacity=0.55,
+                           line=dict(color="white", width=1)),
+                name="Daily obs", showlegend=False,
+                customdata=np.stack([pq["Date"].dt.strftime("%b %d, %Y"), vq], axis=-1),
+                hovertemplate="<b>%{customdata[0]}</b><br>Px Δ: %{x:+,.2f}<br>OI Δ: %{y:+,.0f}"
+                             "<br>Volume: %{customdata[1]:,.0f}<extra></extra>",
+            ))
+            fig_q.add_trace(go.Scatter(
+                x=[xq[-1]], y=[yq[-1]], mode="markers",
+                marker=dict(color="#f59e0b", size=13, symbol="star",
+                           line=dict(color="white", width=1)),
+                name=f"Latest ({pq['Date'].iloc[-1].strftime('%b %d, %Y')})",
+            ))
+            fig_q.update_layout(
+                height=460, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+                font=dict(color=C["font"], family="Inter, sans-serif"),
+                margin=dict(l=60, r=30, t=20, b=60),
+                xaxis=dict(title="Price Change", showgrid=True, gridcolor=C["grid"],
+                          zeroline=True, zerolinecolor="rgba(0,0,0,0.3)", zerolinewidth=1,
+                          range=[-x_absmax*1.08, x_absmax*1.08], tickfont=dict(size=11, color=C["font"])),
+                yaxis=dict(title="OI Change (contracts)", showgrid=True, gridcolor=C["grid"],
+                          zeroline=True, zerolinecolor="rgba(0,0,0,0.3)", zerolinewidth=1,
+                          range=[-y_absmax*1.08, y_absmax*1.08], tickfont=dict(size=11, color=C["font"])),
+                legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
+                           bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            )
+            st.plotly_chart(fig_q, use_container_width=True)
 
     # ── Daily OI & Volume by Contract Month (HTML table) ────────────────────
     with st.expander("Daily OI & Volume by Contract Month", expanded=False):
