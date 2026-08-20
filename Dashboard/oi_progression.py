@@ -405,7 +405,7 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_vol = st.tabs(["OI Progression", "Volume"])
+tab_oi, tab_vol, tab_flow = st.tabs(["OI Progression", "Volume", "OI Flow"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -783,3 +783,84 @@ with tab_vol:
                 outer_color=C["vr_outer"], inner_color=C["vr_inner"], avg_color=C["vr_avg"],
                 dte_range=dte_range, dte_now=d_now, height=460)
             st.plotly_chart(fig_vr, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — OI FLOW (daily OI change vs Volume, same contract as the other tabs)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_flow:
+    month_name = MONTH_NAMES.get(selected_month, selected_month)
+    st.markdown(f"### {current_contract}  |  Daily OI Change vs Volume")
+    st.caption(
+        "Green/red bars = day-over-day change in Open Interest (left axis) — "
+        "positive means new positions opened, negative means positions closed. "
+        "Grey bars = that day's Volume (right axis, background). Reading the two "
+        "together tells you *why* volume happened: high volume with OI rising is "
+        "fresh positioning; high volume with OI falling is unwind/short-covering, "
+        "not new interest — a plain volume chart can't tell those apart."
+    )
+
+    flow_lookback = st.slider("Lookback (calendar days)", 30, 365, 120, step=10,
+                              key="flow_lookback")
+
+    curr_flow = df_month[df_month["ice_symbol"] == current_contract].sort_values("Date").copy()
+    curr_flow["oi_change"] = curr_flow["open_interest"].diff()
+    curr_flow = curr_flow.dropna(subset=["oi_change"])
+
+    cutoff_flow = curr_flow["Date"].max() - pd.Timedelta(days=flow_lookback) if not curr_flow.empty else None
+    flow_win = curr_flow[curr_flow["Date"] >= cutoff_flow] if cutoff_flow is not None else curr_flow
+
+    if flow_win.empty:
+        st.info("Not enough history for this contract to show daily OI change.")
+    else:
+        latest_flow   = flow_win.iloc[-1]
+        latest_change = latest_flow["oi_change"]
+        latest_vol    = latest_flow["volume"]
+        turnover      = (latest_vol / abs(latest_change)) if latest_change else float("nan")
+        net_flow_win  = flow_win["oi_change"].sum()
+
+        kpi_row([
+            ("Contract",        current_contract),
+            ("Latest OI Chg",   f"{latest_change:+,.0f}"),
+            ("Latest Volume",   f"{latest_vol:,.0f}"),
+            ("As of",           latest_flow["Date"].strftime("%b %d, %Y")),
+            (f"Net OI Chg ({flow_lookback}d)", f"{net_flow_win:+,.0f}"),
+        ])
+
+        bar_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in flow_win["oi_change"]]
+
+        all_bdays_f    = pd.bdate_range(flow_win["Date"].min(), flow_win["Date"].max())
+        missing_days_f = all_bdays_f.difference(pd.DatetimeIndex(flow_win["Date"].unique()))
+        rangebreaks_f  = [dict(bounds=["sat", "mon"])]
+        if len(missing_days_f):
+            rangebreaks_f.append(dict(values=missing_days_f))
+
+        fig_flow = go.Figure()
+        fig_flow.add_trace(go.Bar(
+            x=flow_win["Date"], y=flow_win["volume"], name="Volume",
+            marker_color="rgba(120,120,120,0.30)", yaxis="y2",
+            hovertemplate="<b>%{x|%b %d, %Y}</b><br>Volume: %{y:,.0f}<extra></extra>",
+        ))
+        fig_flow.add_trace(go.Bar(
+            x=flow_win["Date"], y=flow_win["oi_change"], name="OI Change",
+            marker_color=bar_colors,
+            hovertemplate="<b>%{x|%b %d, %Y}</b><br>OI Change: %{y:+,.0f}<extra></extra>",
+        ))
+        fig_flow.update_layout(
+            barmode="overlay",
+            title=dict(text=f"<b>{commodity} {month_name}</b>  |  Daily OI Change vs Volume",
+                       font=dict(size=16, color=C["font"]), x=0.01),
+            xaxis=dict(title="Date", showgrid=True, gridcolor=C["grid"],
+                      tickfont=dict(size=11, color=C["font"]), rangebreaks=rangebreaks_f),
+            yaxis=dict(title="OI Change (contracts)", showgrid=True, gridcolor=C["grid"],
+                      zeroline=True, zerolinecolor="rgba(0,0,0,0.25)", zerolinewidth=1,
+                      tickfont=dict(size=11, color=C["font"])),
+            yaxis2=dict(title="Volume (contracts)", overlaying="y", side="right",
+                       showgrid=False, tickfont=dict(size=11, color=C["font"])),
+            plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+            font=dict(color=C["font"], family="Inter, sans-serif"),
+            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0,
+                       bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            hovermode="x unified", height=500, margin=dict(l=70, r=60, t=60, b=90),
+        )
+        st.plotly_chart(fig_flow, use_container_width=True)
