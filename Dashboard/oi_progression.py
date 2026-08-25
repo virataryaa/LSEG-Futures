@@ -662,8 +662,13 @@ with tab_oi:
         res_n2 = _normalize_oi_at_dte_max(commodity, selected_month, hist_range, current_contract, mt)
         if res_n2 is not None:
             band_n2, curr_n2, dte_max, current_reached = res_n2
-            st.caption(f"DTE_max = {dte_max} days to expiry — average, across the selected "
-                       f"historical years, of the day each year's OI peaked.")
+            st.caption(
+                f"DTE_max = {dte_max} days to expiry — average, across the selected historical years, "
+                f"of the day each year's OI peaked.",
+                help="DTE_max is the average, across the selected historical years, of the day-to-expiry "
+                     "each year's OI hit its own high; every year's OI curve is then divided by that same "
+                     "year's own OI reading on that DTE_max day (not its own peak) and shown as a %.",
+            )
             if not current_reached:
                 st.info(f"{current_contract} is still at {dte_now} days to expiry and hasn't "
                          f"counted down to DTE_max={dte_max} yet, so it has no line here until it does.")
