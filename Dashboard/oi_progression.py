@@ -219,7 +219,11 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
         curr_df = dm[dm["ice_symbol"] == current_sym].sort_values("Date").copy()
 
     band = _band_from_norm(dm, hist_syms_ok, hist_year_range)
-    return band, curr_df, dte_max, current_reached
+    hist_norm = dm[
+        dm["ice_symbol"].isin(hist_syms_ok) &
+        dm["year"].between(hist_year_range[0], hist_year_range[1])
+    ].copy()
+    return band, curr_df, dte_max, current_reached, hist_norm
 
 
 @st.cache_data(max_entries=200, show_spinner=False)
@@ -661,7 +665,7 @@ with tab_oi:
     with col_norm:
         res_n2 = _normalize_oi_at_dte_max(commodity, selected_month, hist_range, current_contract, mt)
         if res_n2 is not None:
-            band_n2, curr_n2, dte_max, current_reached = res_n2
+            band_n2, curr_n2, dte_max, current_reached, hist_norm_n2 = res_n2
             st.caption(
                 f"DTE_max = {dte_max} days to expiry — average, across the selected historical years, "
                 f"of the day each year's OI peaked.",
@@ -679,7 +683,7 @@ with tab_oi:
                 y_fmt=".1f", y_suffix="%",
                 outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
                 dte_range=norm_dte_range, dte_now=dte_now,
-                show_individual=False, hist_df=None, ind_metric=None,
+                show_individual=show_individual, hist_df=hist_norm_n2, ind_metric="open_interest",
                 height=520,
             )
             st.plotly_chart(fig_n2, use_container_width=True)
