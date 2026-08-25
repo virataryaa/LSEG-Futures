@@ -131,38 +131,24 @@ def _densify_by_dte(hist_df, metric_col):
 
 
 @st.cache_data(max_entries=200, show_spinner=False)
-def _normalize_oi(commodity, month, hist_year_range, current_sym, mtime=0.0):
-    """Returns (band, curr_df) with every contract (historical + current)
-    divided by the SAME constant: the historical average OI at the DTE where
-    that average peaks. Y-axis reads as '% of typical peak'. Lines can and
-    will go above 100% in big years."""
+def _compute_dte_max(commodity, month, hist_year_range, mtime=0.0):
+    """DTE_max: for each historical year, find the days-to-expiry where that
+    year's OI peaked, then average those DTEs across years. This is a single
+    reference day-to-expiry ('OI typically peaks here'), not a divisor."""
     df = load_data(commodity, mtime)
     dm = df[df["month"] == month].copy()
-    active_syms, hist_syms = _split_contracts(dm)
-    if not active_syms or not hist_syms:
-        return None
-
-    hist_raw = dm[
+    _, hist_syms = _split_contracts(dm)
+    hist = dm[
         dm["ice_symbol"].isin(hist_syms) &
         dm["year"].between(hist_year_range[0], hist_year_range[1])
     ]
-    hist_dense_pre = _densify_by_dte(hist_raw, "open_interest")
-    avg_curve = hist_dense_pre.groupby("days_to_expiry")["open_interest"].mean()
-    if avg_curve.empty:
+    if hist.empty:
         return None
-    divisor = float(avg_curve.max())
-    if divisor <= 0:
-        return None
+    peak_dtes = hist.loc[hist.groupby("ice_symbol")["open_interest"].idxmax(), "days_to_expiry"]
+    return int(round(peak_dtes.mean()))
 
-    dm.loc[dm["ice_symbol"].isin(hist_syms), "open_interest"] = (
-        dm.loc[dm["ice_symbol"].isin(hist_syms), "open_interest"] / divisor * 100
-    )
 
-    curr_df = dm[dm["ice_symbol"] == current_sym].sort_values("Date").copy()
-    if curr_df.empty:
-        return None
-    curr_df["open_interest"] = curr_df["open_interest"] / divisor * 100
-
+def _band_from_norm(dm, hist_syms, hist_year_range):
     hist_norm = dm[
         dm["ice_symbol"].isin(hist_syms) &
         dm["year"].between(hist_year_range[0], hist_year_range[1])
@@ -177,7 +163,87 @@ def _normalize_oi(commodity, month, hist_year_range, current_sym, mtime=0.0):
     )
     for c in ["hist_mean", "hist_q25", "hist_q75"]:
         band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
+    return band
+
+
+@st.cache_data(max_entries=200, show_spinner=False)
+def _normalize_oi_own_peak(commodity, month, hist_year_range, current_sym, mtime=0.0):
+    """Method 1: every contract (historical + current) is divided by ITS OWN
+    peak OI. Every line tops out at exactly 100% at its own DTE. For the
+    current contract this uses its running peak-so-far, so it's always
+    plottable even before expiry."""
+    df = load_data(commodity, mtime)
+    dm = df[df["month"] == month].copy()
+    active_syms, hist_syms = _split_contracts(dm)
+    if not active_syms or not hist_syms:
+        return None
+
+    dm = dm.copy()
+    own_peak = dm.groupby("ice_symbol")["open_interest"].transform("max")
+    dm["open_interest"] = dm["open_interest"] / own_peak * 100
+
+    curr_df = dm[dm["ice_symbol"] == current_sym].sort_values("Date").copy()
+    if curr_df.empty:
+        return None
+
+    band = _band_from_norm(dm, hist_syms, hist_year_range)
     return band, curr_df
+
+
+@st.cache_data(max_entries=200, show_spinner=False)
+def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mtime=0.0):
+    """Method 2: every contract is divided by ITS OWN OI reading at DTE_max
+    (the common reference day-to-expiry from _compute_dte_max) — not its own
+    peak, so a year's line can go above/below 100% elsewhere. The current
+    contract has no divisor (and isn't plotted) until it actually counts
+    down past DTE_max, since there's no real reading yet."""
+    df = load_data(commodity, mtime)
+    dm = df[df["month"] == month].copy()
+    active_syms, hist_syms = _split_contracts(dm)
+    if not active_syms or not hist_syms:
+        return None
+
+    dte_max = _compute_dte_max(commodity, month, hist_year_range, mtime)
+    if dte_max is None:
+        return None
+
+    hist_syms_range = sorted(dm[
+        dm["ice_symbol"].isin(hist_syms) &
+        dm["year"].between(hist_year_range[0], hist_year_range[1])
+    ]["ice_symbol"].unique().tolist())
+
+    divisors = {}
+    for sym in hist_syms_range + [current_sym]:
+        g = (dm.loc[dm["ice_symbol"] == sym, ["days_to_expiry", "open_interest"]]
+             .drop_duplicates("days_to_expiry")
+             .set_index("days_to_expiry")
+             .sort_index())
+        if len(g) < 2:
+            continue
+        lo, hi = int(g.index.min()), int(g.index.max())
+        if dte_max < lo or dte_max > hi:
+            continue  # this contract's life never covered DTE_max (e.g. current, still to come)
+        dense = g.reindex(range(lo, hi + 1)).interpolate(method="linear")
+        divisors[sym] = float(dense.loc[dte_max, "open_interest"])
+
+    hist_syms_ok = [s for s in hist_syms_range if divisors.get(s, 0) > 0]
+    if not hist_syms_ok:
+        return None
+
+    dm = dm.copy()
+    for s in hist_syms_ok:
+        mask = dm["ice_symbol"] == s
+        dm.loc[mask, "open_interest"] = dm.loc[mask, "open_interest"] / divisors[s] * 100
+
+    current_reached = divisors.get(current_sym, 0) > 0
+    curr_df = None
+    if current_reached:
+        mask = dm["ice_symbol"] == current_sym
+        dm.loc[mask, "open_interest"] = dm.loc[mask, "open_interest"] / divisors[current_sym] * 100
+        curr_df = dm[dm["ice_symbol"] == current_sym].sort_values("Date").copy()
+
+    band = _band_from_norm(dm, hist_syms_ok, hist_year_range)
+    return band, curr_df, dte_max, current_reached
 
 
 @st.cache_data(max_entries=200, show_spinner=False)
@@ -265,22 +331,24 @@ def build_chart(band, curr_df, metric_col, current_sym,
                 name=sym, showlegend=True,
                 hovertemplate=f"{sym} DTE:%{{x}} %{{y:{y_fmt}}}<extra></extra>"))
 
-    # Current line
-    fig.add_trace(go.Scatter(x=curr_df["days_to_expiry"], y=curr_df[metric_col],
-        mode="lines", line=dict(color=C["current"], width=2.5),
-        name=current_sym,
-        hovertemplate=f"<b>{current_sym}</b><br>DTE: %{{x}}<br>%{{y:{y_fmt}}}{y_suffix}<extra></extra>"))
+    # Current line (skipped when there's no current-year data yet, e.g. the
+    # contract hasn't reached the DTE_max reference point under Method 2)
+    if curr_df is not None and not curr_df.empty:
+        fig.add_trace(go.Scatter(x=curr_df["days_to_expiry"], y=curr_df[metric_col],
+            mode="lines", line=dict(color=C["current"], width=2.5),
+            name=current_sym,
+            hovertemplate=f"<b>{current_sym}</b><br>DTE: %{{x}}<br>%{{y:{y_fmt}}}{y_suffix}<extra></extra>"))
 
-    # Latest dot
-    latest = curr_df.iloc[-1]
-    lat_val = latest[metric_col]
-    lat_dte = int(latest["days_to_expiry"])
-    lat_dt  = latest["Date"].strftime("%b %d, %Y")
-    fig.add_trace(go.Scatter(x=[lat_dte], y=[lat_val],
-        mode="markers",
-        marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
-        showlegend=False,
-        hovertemplate=f"<b>{lat_dt}</b><br>DTE: {lat_dte}<br>{lat_val:{y_fmt}}{y_suffix}<extra></extra>"))
+        # Latest dot
+        latest = curr_df.iloc[-1]
+        lat_val = latest[metric_col]
+        lat_dte = int(latest["days_to_expiry"])
+        lat_dt  = latest["Date"].strftime("%b %d, %Y")
+        fig.add_trace(go.Scatter(x=[lat_dte], y=[lat_val],
+            mode="markers",
+            marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
+            showlegend=False,
+            hovertemplate=f"<b>{lat_dt}</b><br>DTE: {lat_dte}<br>{lat_val:{y_fmt}}{y_suffix}<extra></extra>"))
 
     fig.add_vline(x=dte_now, line=dict(color=C["vline"], width=1, dash="dot"))
 
@@ -615,20 +683,47 @@ with tab_oi:
         st.plotly_chart(fig_oi, use_container_width=True)
 
     with col_norm:
-        res_n = _normalize_oi(commodity, selected_month, hist_range, current_contract, mt)
-        if res_n is not None:
-            band_n, curr_n = res_n
-            fig_n = build_chart(
-                band_n, curr_n, "open_interest", current_contract,
-                title=f"<b>{commodity} {month_name}</b>  |  Normalized (% of typical peak)",
-                y_title="Open Interest (% of typical peak)",
-                y_fmt=".1f", y_suffix="%",
-                outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
-                dte_range=norm_dte_range, dte_now=dte_now,
-                show_individual=False, hist_df=None, ind_metric=None,
-                height=520,
-            )
-            st.plotly_chart(fig_n, use_container_width=True)
+        norm_method = st.radio(
+            "Normalization method",
+            ["Own peak", "OI at typical peak DTE (DTE_max)"],
+            horizontal=True, key="norm_method",
+        )
+
+        if norm_method == "Own peak":
+            res_n = _normalize_oi_own_peak(commodity, selected_month, hist_range, current_contract, mt)
+            if res_n is not None:
+                band_n, curr_n = res_n
+                fig_n = build_chart(
+                    band_n, curr_n, "open_interest", current_contract,
+                    title=f"<b>{commodity} {month_name}</b>  |  Normalized (% of own peak)",
+                    y_title="Open Interest (% of own peak)",
+                    y_fmt=".1f", y_suffix="%",
+                    outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
+                    dte_range=norm_dte_range, dte_now=dte_now,
+                    show_individual=False, hist_df=None, ind_metric=None,
+                    height=520,
+                )
+                st.plotly_chart(fig_n, use_container_width=True)
+        else:
+            res_n2 = _normalize_oi_at_dte_max(commodity, selected_month, hist_range, current_contract, mt)
+            if res_n2 is not None:
+                band_n2, curr_n2, dte_max, current_reached = res_n2
+                st.caption(f"DTE_max = {dte_max} days to expiry — average, across the selected "
+                           f"historical years, of the day each year's OI peaked.")
+                if not current_reached:
+                    st.info(f"{current_contract} is still at {dte_now} days to expiry and hasn't "
+                             f"counted down to DTE_max={dte_max} yet, so it has no line here until it does.")
+                fig_n2 = build_chart(
+                    band_n2, curr_n2, "open_interest", current_contract,
+                    title=f"<b>{commodity} {month_name}</b>  |  Normalized (% of OI at DTE_max={dte_max})",
+                    y_title="Open Interest (% of OI at DTE_max)",
+                    y_fmt=".1f", y_suffix="%",
+                    outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
+                    dte_range=norm_dte_range, dte_now=dte_now,
+                    show_individual=False, hist_df=None, ind_metric=None,
+                    height=520,
+                )
+                st.plotly_chart(fig_n2, use_container_width=True)
 
     # ── 2x2 Active contracts ──────────────────────────────────────────────────
     st.markdown("---")
