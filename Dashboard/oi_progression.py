@@ -574,6 +574,14 @@ def _flat_tint(v) -> str:
     return "background:rgba(22,163,74,.12)" if v > 0 else "background:rgba(220,38,38,.12)"
 
 
+# Shared fixed widths so the contract-month columns line up pixel-for-pixel
+# between the daily grid and the separate "per expiry" table below it — two
+# independent tables won't auto-align on their own since each has a
+# different total column count.
+_CCOL_W = 58
+_DATECOL_W = 84
+
+
 def _sign_color(v) -> str:
     if pd.isna(v) or v == 0:
         return "#1d1d1f"
@@ -741,20 +749,21 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
 
     oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
 
-    css = """<style>
-      .spotgrid-wrap{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}
-      table.spotgrid{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotgrid th,table.spotgrid td{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}
-      table.spotgrid th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
-        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
-      table.spotgrid .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
-        box-shadow:inset -1px 0 0 0 #e5e7eb}
-      table.spotgrid .tot-cell{background:#fafafa;font-weight:700}
-      table.spotgrid tr.tue-row{background:#eceef1}
-      table.spotgrid tbody tr:hover td{background-color:rgba(10,36,99,.04)}
+    css = f"""<style>
+      .spotgrid-wrap{{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}}
+      table.spotgrid{{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}}
+      table.spotgrid th,table.spotgrid td{{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}}
+      table.spotgrid th{{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}}
+      table.spotgrid .date-cell{{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
+        box-shadow:inset -1px 0 0 0 #e5e7eb;min-width:{_DATECOL_W}px}}
+      table.spotgrid .ccol{{min-width:{_CCOL_W}px}}
+      table.spotgrid .tot-cell{{background:#fafafa;font-weight:700}}
+      table.spotgrid tr.tue-row{{background:#eceef1}}
+      table.spotgrid tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
 
-    header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) +
+    header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
               "<th class='tot-cell'>Total</th><th>OI Chg</th><th>Price</th><th>+/-</th>"
               "<th>Spot OI +/-</th><th>Non Spot</th><th>Date</th>"
               f"<th>{spread_label}</th><th>Spot OI 5d</th></tr>")
@@ -766,7 +775,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         cells = f"<td class='date-cell'>{d_str}</td>"
         for s in syms:
             v = oi_piv.at[d, s] if s in oi_piv.columns else np.nan
-            cells += f"<td>{_fmt_num(v)}</td>"
+            cells += f"<td class='ccol'>{_fmt_num(v)}</td>"
         px_v = spot_price.get(d)
         px_pct_v, oi_chg_v, spot_chg_v, spread_v, spot5d_v = (
             price_chg_pct.get(d), oi_chg.get(d), spot_oi_chg.get(d),
@@ -805,19 +814,20 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
     dates_desc = sorted(dates, reverse=True)
     col_vmax = per_chg.loc[dates].abs().max()
 
-    css = """<style>
-      .expchg-wrap{overflow:auto;max-height:480px;border:1px solid #e5e7eb;border-radius:6px}
-      table.expchg{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.expchg th,table.expchg td{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}
-      table.expchg th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
-        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
-      table.expchg .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
-        box-shadow:inset -1px 0 0 0 #e5e7eb}
-      table.expchg tr.tue-row{background:#eceef1}
-      table.expchg tbody tr:hover td{background-color:rgba(10,36,99,.04)}
+    css = f"""<style>
+      .expchg-wrap{{overflow:auto;max-height:480px;border:1px solid #e5e7eb;border-radius:6px}}
+      table.expchg{{border-collapse:collapse;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}}
+      table.expchg th,table.expchg td{{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}}
+      table.expchg th{{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}}
+      table.expchg .date-cell{{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
+        box-shadow:inset -1px 0 0 0 #e5e7eb;min-width:{_DATECOL_W}px}}
+      table.expchg .ccol{{min-width:{_CCOL_W}px}}
+      table.expchg tr.tue-row{{background:#eceef1}}
+      table.expchg tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
 
-    header = "<tr><th class='date-cell'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
+    header = "<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) + "</tr>"
     rows = []
     for d in dates_desc:
         d_str = pd.Timestamp(d).strftime("%d/%m/%Y")
@@ -825,7 +835,7 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
         cells = f"<td class='date-cell'>{d_str}</td>"
         for s in syms:
             v = per_chg.at[d, s] if s in per_chg.columns else np.nan
-            cells += f"<td style='{_oi_chg_style(v, col_vmax.get(s))}'>{_fmt_num(v, True)}</td>"
+            cells += f"<td class='ccol' style='{_oi_chg_style(v, col_vmax.get(s))}'>{_fmt_num(v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='expchg-wrap'><table class='expchg'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -1408,6 +1418,8 @@ with tab_spot:
         f"{COMMODITIES[commodity][1]} — Spot OI Report</div>",
         unsafe_allow_html=True,
     )
+    st.caption("Price = settlement of the **spot** contract — whichever unexpired month "
+              "currently has the highest OI (shifts as contracts roll).")
 
     spot_data = build_spot_oi_data(commodity, mt)
     st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
@@ -1420,35 +1432,32 @@ with tab_spot:
         leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
         leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
 
-        st.markdown("""<style>
-          .st-key-spot_controls div[data-testid="stSlider"],
-          .st-key-spot_controls div[data-testid="stSelectbox"] { margin-bottom:-16px; }
-          .st-key-spot_controls label p { font-size:.68rem !important; margin-bottom:0 !important; }
-          .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
-        </style>""", unsafe_allow_html=True)
+        spot_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
+                                  key="spot_table_lookback")
 
-        with st.container(key="spot_controls"):
-            c1, c2, c3 = st.columns([2, 1, 1])
-            with c1:
-                spot_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
-                                          key="spot_table_lookback")
-            with c2:
-                leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
-            with c3:
-                leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+        with st.expander("Daily OI Change per Expiry", expanded=False):
+            html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
+            if html_expchg is None:
+                st.info("No data in this window.")
+            else:
+                st.markdown(html_expchg, unsafe_allow_html=True)
 
-        html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, mt)
-        if html_spot is None:
-            st.info("No data in this window.")
-        else:
-            st.markdown(html_spot, unsafe_allow_html=True)
+        with st.expander("Spot OI Report — daily grid", expanded=False):
+            st.markdown("""<style>
+              .st-key-spot_controls div[data-testid="stSelectbox"] { margin-bottom:-16px; }
+              .st-key-spot_controls label p { font-size:.68rem !important; margin-bottom:0 !important; }
+              .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
+            </style>""", unsafe_allow_html=True)
 
-        st.markdown(
-            "<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
-            "Daily OI Change per Expiry</div>", unsafe_allow_html=True,
-        )
-        html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
-        if html_expchg is None:
-            st.info("No data in this window.")
-        else:
-            st.markdown(html_expchg, unsafe_allow_html=True)
+            with st.container(key="spot_controls"):
+                c2, c3 = st.columns(2)
+                with c2:
+                    leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
+                with c3:
+                    leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+
+            html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, mt)
+            if html_spot is None:
+                st.info("No data in this window.")
+            else:
+                st.markdown(html_spot, unsafe_allow_html=True)
