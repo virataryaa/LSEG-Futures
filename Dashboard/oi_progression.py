@@ -551,6 +551,214 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
             f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
+# ── Spot OI report — spot (most-active month) vs non-spot OI, with COT- ────────
+#    Tuesday-aligned weekly snapshots, matching the desk's reference sheet.
+def _fmt_num(v, signed: bool = False) -> str:
+    if pd.isna(v):
+        return ""
+    return f"{v:+,.0f}" if signed else f"{v:,.0f}"
+
+
+def _fmt_pct(v) -> str:
+    if pd.isna(v):
+        return ""
+    return f"{v:+.1f}%"
+
+
+def _spot_series(oi_piv: pd.DataFrame, px_piv: pd.DataFrame):
+    """For every date, find whichever contract has the highest OI (the
+    'spot'/most-active month) and pull its OI and settlement price — the
+    active month shifts over time as contracts roll (e.g. Z6 now, H7 once
+    Z6 expires), unlike 'nearest expiry' which would stay on a thin,
+    already-rolled-out-of front month."""
+    syms_out, oi_out, px_out = [], [], []
+    for d in oi_piv.index:
+        row = oi_piv.loc[d]
+        if row.notna().any():
+            sym = row.idxmax()
+            syms_out.append(sym)
+            oi_out.append(row[sym])
+            px_out.append(px_piv.at[d, sym] if sym in px_piv.columns else np.nan)
+        else:
+            syms_out.append(None); oi_out.append(np.nan); px_out.append(np.nan)
+    idx = oi_piv.index
+    return (pd.Series(syms_out, index=idx), pd.Series(oi_out, index=idx, dtype=float),
+            pd.Series(px_out, index=idx, dtype=float))
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_spot_oi_data(commodity: str, mtime: float = 0.0) -> dict:
+    """Full-history spot/non-spot OI series for a commodity. Cached once
+    per commodity; the report tab below slices this to its own lookback
+    window for display, and diffs are computed here on the full series
+    first so a display-window edge never truncates a change calculation."""
+    df_all = load_data(commodity, mtime).sort_values(["ice_symbol", "Date"])
+    today = pd.Timestamp(date.today())
+    ltd_map = df_all.groupby("ice_symbol")["LTD"].first()
+    # Only currently-unexpired contract months — matches _split_contracts'
+    # convention elsewhere in this file. Restricting up front (rather than
+    # showing every contract ever traded) keeps the column set to the
+    # handful of months actually relevant right now.
+    syms = ltd_map[ltd_map >= today].sort_values().index.tolist()
+
+    oi_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last").reindex(columns=syms)
+    px_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="settlement", aggfunc="last").reindex(columns=syms)
+
+    total_oi = oi_piv.sum(axis=1, min_count=1)
+    spot_sym, spot_oi, spot_price = _spot_series(oi_piv, px_piv)
+    non_spot_oi = total_oi - spot_oi
+
+    return dict(
+        syms=syms, oi_piv=oi_piv, px_piv=px_piv, total_oi=total_oi,
+        spot_sym=spot_sym, spot_oi=spot_oi, spot_price=spot_price, non_spot_oi=non_spot_oi,
+        oi_chg=total_oi.diff(), spot_oi_chg=spot_oi.diff(), spot_oi_5d=spot_oi.diff(5),
+        price_chg_pct=spot_price.pct_change() * 100,
+    )
+
+
+def build_spot_summary_html(data: dict) -> str:
+    """LAST (today's raw OI) + the day-over-day and since-last-COT deltas,
+    then the last two confirmed COT Tuesdays with their own week-over-week
+    deltas — 'confirmed' meaning strictly before the latest date, since
+    the current week's Tuesday COT report isn't published until Friday
+    even if today happens to be that Tuesday."""
+    syms = data["syms"]; oi_piv = data["oi_piv"]; total_oi = data["total_oi"]; spot_price = data["spot_price"]
+    dates = list(oi_piv.index)
+    if not dates:
+        return "<p>No data.</p>"
+    max_date = dates[-1]
+    prev_day = dates[-2] if len(dates) >= 2 else None
+    tuesdays = [d for d in dates if pd.Timestamp(d).weekday() == 1 and d < max_date]
+    last_cot  = tuesdays[-1] if len(tuesdays) >= 1 else None
+    prev_cot  = tuesdays[-2] if len(tuesdays) >= 2 else None
+    prev_cot2 = tuesdays[-3] if len(tuesdays) >= 3 else None
+
+    def oi_row(d):
+        return oi_piv.loc[d] if d is not None else pd.Series(index=syms, dtype=float)
+
+    def px(d):
+        return spot_price.loc[d] if d is not None else np.nan
+
+    def px_chg_pct(d1, d0):
+        p1, p0 = px(d1), px(d0)
+        return (p1 - p0) / p0 * 100 if (d1 is not None and d0 is not None and p0) else np.nan
+
+    css = """<style>
+      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:14px}
+      table.spotsum{border-collapse:collapse;width:100%;font-size:.78rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotsum th,table.spotsum td{padding:4px 10px;text-align:center}
+      table.spotsum th{background:#0a2463;color:#dde4f0;font-weight:500;font-size:.68rem;text-transform:uppercase}
+      table.spotsum td.lbl{text-align:left;font-weight:600;color:#1d1d1f}
+      table.spotsum tr.delta td{color:#6b7280;font-style:italic}
+      table.spotsum tr.spacer td{padding:6px 0;border:none}
+      table.spotsum td.tot{font-weight:700;background:#fffbea}
+    </style>"""
+
+    def value_row(label, d):
+        if d is None:
+            return ""
+        cells = "".join(f"<td>{_fmt_num(oi_row(d).get(s))}</td>" for s in syms)
+        px_txt = f"{px(d):.2f}" if pd.notna(px(d)) else ""
+        return (f"<tr><td class='lbl'>{label}</td>{cells}"
+                f"<td class='tot'>{_fmt_num(total_oi.get(d))}</td><td>{px_txt}</td></tr>")
+
+    def delta_row(label, d1, d0):
+        if d1 is None or d0 is None:
+            return ""
+        delta = oi_row(d1) - oi_row(d0)
+        vmax = delta.abs().max()
+        cells = "".join(f"<td style='{_oi_chg_style(delta.get(s), vmax)}'>{_fmt_num(delta.get(s), True)}</td>" for s in syms)
+        tot_delta = total_oi.get(d1) - total_oi.get(d0)
+        return (f"<tr class='delta'><td class='lbl'>{label}</td>{cells}"
+                f"<td class='tot'>{_fmt_num(tot_delta, True)}</td><td>{_fmt_pct(px_chg_pct(d1, d0))}</td></tr>")
+
+    spacer = f"<tr class='spacer'><td colspan='{len(syms) + 3}'></td></tr>"
+    header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) + "<th>Total</th><th>Price</th></tr>"
+    body = (
+        value_row(pd.Timestamp(max_date).strftime("%d/%m/%Y"), max_date)
+        + delta_row("+/- day", max_date, prev_day)
+        + delta_row("+/- Last COT", max_date, last_cot)
+        + spacer
+        + value_row(pd.Timestamp(last_cot).strftime("%d/%m/%Y") if last_cot else "", last_cot)
+        + delta_row("+/- week", last_cot, prev_cot)
+        + spacer
+        + value_row(pd.Timestamp(prev_cot).strftime("%d/%m/%Y") if prev_cot else "", prev_cot)
+        + delta_row("+/- week", prev_cot, prev_cot2)
+    )
+    return f"{css}<div class='spotsum-wrap'><table class='spotsum'>{header}<tbody>{body}</tbody></table></div>"
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, leg2: str,
+                                mtime: float = 0.0):
+    """Daily grid: per-contract OI, Total, spot Price, day OI/Spot-OI
+    changes, Non-Spot OI, a user-picked calendar-spread, and the spot
+    month's 5-trading-day OI change."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    total_oi = data["total_oi"]; spot_price = data["spot_price"]
+    non_spot_oi = data["non_spot_oi"]; oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
+    spot_oi_5d = data["spot_oi_5d"]; price_chg_pct = data["price_chg_pct"]
+
+    if oi_piv.empty:
+        return None
+    max_date = oi_piv.index.max()
+    cutoff = max_date - pd.Timedelta(days=table_lookback)
+    dates = [d for d in oi_piv.index if d >= cutoff]
+    if not dates:
+        return None
+    dates_desc = sorted(dates, reverse=True)
+
+    have_spread = leg1 in px_piv.columns and leg2 in px_piv.columns
+    spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
+    root_len = len(commodity)
+    spread_label = f"{leg1}-{leg2[root_len:]}" if have_spread else "Spread"
+
+    oi_col_min = oi_piv.loc[dates].min()
+    oi_col_max = oi_piv.loc[dates].max()
+    oi_chg_vmax    = _safe(oi_chg.loc[dates].abs().max())
+    spot_chg_vmax  = _safe(spot_oi_chg.loc[dates].abs().max())
+    spot5d_vmax    = _safe(spot_oi_5d.loc[dates].abs().max())
+    px_vmax        = _safe(price_chg_pct.loc[dates].abs().max())
+    spread_vmax    = _safe(spread.loc[dates].abs().max()) if have_spread else 1.0
+
+    css = """<style>
+      .spotgrid-wrap{overflow:auto;max-height:640px;border:1px solid #e5e7eb;border-radius:6px}
+      table.spotgrid{border-collapse:collapse;font-size:9px;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotgrid th,table.spotgrid td{padding:2px 6px;text-align:center;border-bottom:1px solid #f0f0f0}
+      table.spotgrid th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}
+      table.spotgrid .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;box-shadow:inset -2px 0 0 0 #374151}
+      table.spotgrid .tot-cell{background:#fffbea;font-weight:600}
+    </style>"""
+
+    header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) +
+              "<th class='tot-cell'>Total</th><th>Price</th><th>+/-</th><th>OI +/-</th>"
+              "<th>Spot OI +/-</th><th>Non Spot</th><th>Date</th>"
+              f"<th>{spread_label}</th><th>Spot OI 5d</th></tr>")
+
+    rows = []
+    for d in dates_desc:
+        d_str = pd.Timestamp(d).strftime("%d/%m/%Y")
+        cells = f"<td class='date-cell'>{d_str}</td>"
+        for s in syms:
+            v = oi_piv.at[d, s] if s in oi_piv.columns else np.nan
+            cells += f"<td style='{_oi_heatmap_style(v, oi_col_min.get(s), oi_col_max.get(s))}'>{_fmt_num(v)}</td>"
+        px_v = spot_price.get(d)
+        cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
+        cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
+        cells += f"<td style='{_oi_chg_style(price_chg_pct.get(d), px_vmax)}'>{_fmt_pct(price_chg_pct.get(d))}</td>"
+        cells += f"<td style='{_oi_chg_style(oi_chg.get(d), oi_chg_vmax)}'>{_fmt_num(oi_chg.get(d), True)}</td>"
+        cells += f"<td style='{_oi_chg_style(spot_oi_chg.get(d), spot_chg_vmax)}'>{_fmt_num(spot_oi_chg.get(d), True)}</td>"
+        cells += f"<td>{_fmt_num(non_spot_oi.get(d))}</td>"
+        cells += f"<td>{d_str}</td>"
+        sv = spread.get(d) if have_spread else np.nan
+        cells += f"<td style='{_oi_chg_style(sv, spread_vmax)}'>{sv:+.2f}</td>" if pd.notna(sv) else "<td></td>"
+        cells += f"<td style='{_oi_chg_style(spot_oi_5d.get(d), spot5d_vmax)}'>{_fmt_num(spot_oi_5d.get(d), True)}</td>"
+        rows.append(f"<tr>{cells}</tr>")
+
+    return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## Settings")
@@ -613,7 +821,9 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_vol, tab_flow, tab_grid = st.tabs(["OI Progression", "Volume", "OI & Volume Flow", "Comprehensive Grid"])
+tab_oi, tab_vol, tab_flow, tab_grid, tab_spot = st.tabs(
+    ["OI Progression", "Volume", "OI & Volume Flow", "Comprehensive Grid", "Spot OI Report"]
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1115,3 +1325,36 @@ with tab_grid:
         st.info("No data in this window.")
     else:
         st.markdown(html, unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — SPOT OI REPORT (spot vs non-spot OI, COT-Tuesday-aligned snapshots)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_spot:
+    st.markdown(f"### {COMMODITIES[commodity][1]}  |  Spot OI Report")
+
+    spot_data = build_spot_oi_data(commodity, mt)
+    st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
+
+    syms_spot = spot_data["syms"]
+    if not syms_spot:
+        st.info("No contract-month data available.")
+    else:
+        latest_spot_sym = spot_data["spot_sym"].iloc[-1] if len(spot_data["spot_sym"]) else syms_spot[0]
+        leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
+        leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
+
+        c1, c2, c3 = st.columns([2, 1, 1])
+        with c1:
+            spot_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
+                                      key="spot_table_lookback")
+        with c2:
+            leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
+        with c3:
+            leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+
+        html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, mt)
+        if html_spot is None:
+            st.info("No data in this window.")
+        else:
+            st.markdown(html_spot, unsafe_allow_html=True)
