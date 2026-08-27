@@ -578,8 +578,8 @@ def _flat_tint(v) -> str:
 # between the daily grid and the separate "per expiry" table below it — two
 # independent tables won't auto-align on their own since each has a
 # different total column count.
-_CCOL_W = 58
-_DATECOL_W = 84
+_CCOL_W = 72
+_DATECOL_W = 96
 
 
 def _sign_color(v) -> str:
@@ -634,7 +634,7 @@ def build_spot_oi_data(commodity: str, mtime: float = 0.0) -> dict:
     return dict(
         syms=syms, oi_piv=oi_piv, px_piv=px_piv, total_oi=total_oi,
         spot_sym=spot_sym, spot_oi=spot_oi, spot_price=spot_price, non_spot_oi=non_spot_oi,
-        oi_chg=total_oi.diff(), spot_oi_chg=spot_oi.diff(), spot_oi_5d=spot_oi.diff(5),
+        oi_chg=total_oi.diff(), spot_oi_chg=spot_oi.diff(), spot_oi_5d=spot_oi.rolling(5).mean(),
         price_chg_pct=spot_price.pct_change() * 100,
         per_contract_chg=oi_piv.diff(),
     )
@@ -762,21 +762,27 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
       .spotgrid-wrap{{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}}
       table.spotgrid{{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}}
       table.spotgrid th,table.spotgrid td{{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}}
-      table.spotgrid th{{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
-        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}}
+      table.spotgrid th{{position:sticky;top:0;background:#0a2463;color:#fff;font-weight:600;z-index:2;
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}}
       table.spotgrid .date-cell{{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
         box-shadow:inset -1px 0 0 0 #e5e7eb;min-width:{_DATECOL_W}px}}
+      table.spotgrid th.date-cell{{background:#0a2463;color:#fff;z-index:3}}
       table.spotgrid .ccol{{min-width:{_CCOL_W}px}}
       table.spotgrid .tot-cell{{background:#fafafa;font-weight:700}}
+      table.spotgrid th.tot-cell{{background:#0a2463;color:#fff}}
       table.spotgrid tr.tue-row{{background:#eceef1}}
       table.spotgrid tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
 
-    price_label = "Price (Spot)" if price_source == "Spot (Most OI)" else f"Price ({price_source})"
+    if price_source == "Spot (Most OI)":
+        latest_spot = data["spot_sym"].iloc[-1] if len(data["spot_sym"]) else None
+        price_label = f"Price (Spot: {latest_spot})" if latest_spot else "Price (Spot)"
+    else:
+        price_label = f"Price ({price_source})"
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
               f"<th class='tot-cell'>Total</th><th>OI Chg</th><th>{price_label}</th><th>+/-</th>"
-              "<th>Spot OI +/-</th><th>Non Spot</th><th>Date</th>"
-              f"<th>{spread_label}</th><th>Spot OI 5d</th></tr>")
+              "<th>Spot OI +/-</th><th>Non Spot</th><th>Non Spot Chg</th><th>Date</th>"
+              f"<th>{spread_label}</th><th>Spot OI 5d Avg</th></tr>")
 
     rows = []
     for d in dates_desc:
@@ -791,16 +797,21 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
             price_chg_pct.get(d), oi_chg.get(d), spot_oi_chg.get(d),
             spread.get(d) if have_spread else np.nan, spot_oi_5d.get(d),
         )
+        # Non Spot Chg = Total OI change minus Spot OI change — algebraically
+        # the same as diffing the Non-Spot level directly, since
+        # Non Spot = Total - Spot.
+        non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
         cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
         cells += f"<td style='{_flat_tint(px_pct_v)};color:{_sign_color(px_pct_v)}'>{_fmt_pct(px_pct_v)}</td>"
         cells += f"<td style='{_flat_tint(spot_chg_v)};color:{_sign_color(spot_chg_v)};font-weight:600'>{_fmt_num(spot_chg_v, True)}</td>"
         cells += f"<td>{_fmt_num(non_spot_oi.get(d))}</td>"
+        cells += f"<td style='{_flat_tint(non_spot_chg_v)};color:{_sign_color(non_spot_chg_v)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
         cells += f"<td style='color:#9ca3af'>{d_str}</td>"
         cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
                   if pd.notna(spread_v) else "<td></td>")
-        cells += f"<td style='{_flat_tint(spot5d_v)};color:{_sign_color(spot5d_v)}'>{_fmt_num(spot5d_v, True)}</td>"
+        cells += f"<td>{_fmt_num(spot5d_v)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -1440,39 +1451,42 @@ with tab_spot:
         leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
         leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
 
-        spot_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
-                                  key="spot_table_lookback")
-
-        # ── 1. Spot OI Report — daily grid (always visible, no expander) ──────
+        # ── 1. Controls (lookback, price source, spread legs) ──────────────────
         st.markdown("""<style>
-          .st-key-spot_controls div[data-testid="stSelectbox"] { margin-bottom:-16px; }
+          .st-key-spot_controls div[data-testid="stSelectbox"],
+          .st-key-spot_controls div[data-testid="stNumberInput"] { margin-bottom:-16px; }
           .st-key-spot_controls label p { font-size:.68rem !important; margin-bottom:0 !important; }
           .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
         </style>""", unsafe_allow_html=True)
 
-        with st.container(key="spot_controls"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                price_opts = ["Spot (Most OI)"] + syms_spot
-                price_source = st.selectbox(
-                    "Price", price_opts, index=0, key="spot_price_source",
-                    help="Spot (Most OI) is the default: whichever unexpired month "
-                         "currently has the highest OI. Pick a specific contract instead "
-                         "to track that one month's own price throughout, without it "
-                         "switching as OI leadership rolls to the next month.",
-                )
-            with c2:
-                leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
-            with c3:
-                leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+        with st.expander("Controls", expanded=True):
+            with st.container(key="spot_controls"):
+                c0, c1, c2, c3 = st.columns(4)
+                with c0:
+                    spot_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
+                                                    value=90, step=10, key="spot_table_lookback")
+                with c1:
+                    price_opts = ["Spot (Most OI)"] + syms_spot
+                    price_source = st.selectbox(
+                        "Price", price_opts, index=0, key="spot_price_source",
+                        help="Spot (Most OI) is the default: whichever unexpired month "
+                             "currently has the highest OI. Pick a specific contract instead "
+                             "to track that one month's own price throughout, without it "
+                             "switching as OI leadership rolls to the next month.",
+                    )
+                with c2:
+                    leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
+                with c3:
+                    leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
 
+        # ── 2. Spot OI Report — daily grid (always visible, no expander) ───────
         html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
         if html_spot is None:
             st.info("No data in this window.")
         else:
             st.markdown(html_spot, unsafe_allow_html=True)
 
-        # ── 2. Daily OI Change per Expiry (collapsed) ──────────────────────────
+        # ── 3. Daily OI Change per Expiry (collapsed) ──────────────────────────
         with st.expander("Daily OI Change per Expiry", expanded=False):
             html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
             if html_expchg is None:
@@ -1480,5 +1494,5 @@ with tab_spot:
             else:
                 st.markdown(html_expchg, unsafe_allow_html=True)
 
-        # ── 3. Summary block (LAST + COT-Tuesday snapshots) — moved to bottom ──
+        # ── 4. Summary block (LAST + COT-Tuesday snapshots) — moved to bottom ──
         st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
