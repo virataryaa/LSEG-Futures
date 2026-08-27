@@ -565,6 +565,21 @@ def _fmt_pct(v) -> str:
     return f"{v:+.1f}%"
 
 
+def _flat_tint(v) -> str:
+    """A flat, sign-only background wash (no magnitude bar) — reads clean
+    across many narrow columns, where a magnitude-scaled bar tends to
+    render as a thin, glitchy-looking sliver for small values."""
+    if pd.isna(v) or v == 0:
+        return ""
+    return "background:rgba(22,163,74,.12)" if v > 0 else "background:rgba(220,38,38,.12)"
+
+
+def _sign_color(v) -> str:
+    if pd.isna(v) or v == 0:
+        return "#1d1d1f"
+    return "#16a34a" if v > 0 else "#dc2626"
+
+
 def _spot_series(oi_piv: pd.DataFrame, px_piv: pd.DataFrame):
     """For every date, find whichever contract has the highest OI (the
     'spot'/most-active month) and pull its OI and settlement price — the
@@ -644,14 +659,15 @@ def build_spot_summary_html(data: dict) -> str:
         return (p1 - p0) / p0 * 100 if (d1 is not None and d0 is not None and p0) else np.nan
 
     css = """<style>
-      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:14px}
-      table.spotsum{border-collapse:collapse;width:100%;font-size:.78rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotsum th,table.spotsum td{padding:4px 10px;text-align:center}
-      table.spotsum th{background:#0a2463;color:#dde4f0;font-weight:500;font-size:.68rem;text-transform:uppercase}
+      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:10px}
+      table.spotsum{border-collapse:collapse;width:100%;font-size:.72rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotsum th,table.spotsum td{padding:3px 9px;text-align:center;border-bottom:1px solid #f0f0f0}
+      table.spotsum th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;
+        font-size:.64rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
       table.spotsum td.lbl{text-align:left;font-weight:600;color:#1d1d1f}
-      table.spotsum tr.delta td{color:#6b7280;font-style:italic}
-      table.spotsum tr.spacer td{padding:6px 0;border:none}
-      table.spotsum td.tot{font-weight:700;background:#fffbea}
+      table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.66rem}
+      table.spotsum tr.spacer td{padding:4px 0;border:none}
+      table.spotsum td.tot{font-weight:700;background:#fafafa}
     </style>"""
 
     def value_row(label, d):
@@ -666,11 +682,17 @@ def build_spot_summary_html(data: dict) -> str:
         if d1 is None or d0 is None:
             return ""
         delta = oi_row(d1) - oi_row(d0)
-        vmax = delta.abs().max()
-        cells = "".join(f"<td style='{_oi_chg_style(delta.get(s), vmax)}'>{_fmt_num(delta.get(s), True)}</td>" for s in syms)
+        cells = "".join(
+            f"<td style='{_flat_tint(delta.get(s))};color:{_sign_color(delta.get(s))};font-weight:600'>"
+            f"{_fmt_num(delta.get(s), True)}</td>" for s in syms
+        )
         tot_delta = total_oi.get(d1) - total_oi.get(d0)
-        return (f"<tr class='delta'><td class='lbl'>{label}</td>{cells}"
-                f"<td class='tot'>{_fmt_num(tot_delta, True)}</td><td>{_fmt_pct(px_chg_pct(d1, d0))}</td></tr>")
+        px_pct = px_chg_pct(d1, d0)
+        return (
+            f"<tr class='delta'><td class='lbl'>{label}</td>{cells}"
+            f"<td class='tot' style='color:{_sign_color(tot_delta)}'>{_fmt_num(tot_delta, True)}</td>"
+            f"<td style='color:{_sign_color(px_pct)}'>{_fmt_pct(px_pct)}</td></tr>"
+        )
 
     spacer = f"<tr class='spacer'><td colspan='{len(syms) + 3}'></td></tr>"
     header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) + "<th>Total</th><th>Price</th></tr>"
@@ -714,21 +736,16 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     root_len = len(commodity)
     spread_label = f"{leg1}-{leg2[root_len:]}" if have_spread else "Spread"
 
-    oi_col_min = oi_piv.loc[dates].min()
-    oi_col_max = oi_piv.loc[dates].max()
-    oi_chg_vmax    = _safe(oi_chg.loc[dates].abs().max())
-    spot_chg_vmax  = _safe(spot_oi_chg.loc[dates].abs().max())
-    spot5d_vmax    = _safe(spot_oi_5d.loc[dates].abs().max())
-    px_vmax        = _safe(price_chg_pct.loc[dates].abs().max())
-    spread_vmax    = _safe(spread.loc[dates].abs().max()) if have_spread else 1.0
-
     css = """<style>
-      .spotgrid-wrap{overflow:auto;max-height:640px;border:1px solid #e5e7eb;border-radius:6px}
-      table.spotgrid{border-collapse:collapse;font-size:9px;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotgrid th,table.spotgrid td{padding:2px 6px;text-align:center;border-bottom:1px solid #f0f0f0}
-      table.spotgrid th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}
-      table.spotgrid .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;box-shadow:inset -2px 0 0 0 #374151}
-      table.spotgrid .tot-cell{background:#fffbea;font-weight:600}
+      .spotgrid-wrap{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}
+      table.spotgrid{border-collapse:collapse;width:100%;font-size:.72rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotgrid th,table.spotgrid td{padding:2px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
+      table.spotgrid th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
+        font-size:.64rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
+      table.spotgrid .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
+        box-shadow:inset -1px 0 0 0 #e5e7eb}
+      table.spotgrid .tot-cell{background:#fafafa;font-weight:700}
+      table.spotgrid tbody tr:hover td{background-color:rgba(10,36,99,.04)}
     </style>"""
 
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) +
@@ -742,18 +759,22 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         cells = f"<td class='date-cell'>{d_str}</td>"
         for s in syms:
             v = oi_piv.at[d, s] if s in oi_piv.columns else np.nan
-            cells += f"<td style='{_oi_heatmap_style(v, oi_col_min.get(s), oi_col_max.get(s))}'>{_fmt_num(v)}</td>"
+            cells += f"<td>{_fmt_num(v)}</td>"
         px_v = spot_price.get(d)
+        px_pct_v, oi_chg_v, spot_chg_v, spread_v, spot5d_v = (
+            price_chg_pct.get(d), oi_chg.get(d), spot_oi_chg.get(d),
+            spread.get(d) if have_spread else np.nan, spot_oi_5d.get(d),
+        )
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
-        cells += f"<td style='{_oi_chg_style(price_chg_pct.get(d), px_vmax)}'>{_fmt_pct(price_chg_pct.get(d))}</td>"
-        cells += f"<td style='{_oi_chg_style(oi_chg.get(d), oi_chg_vmax)}'>{_fmt_num(oi_chg.get(d), True)}</td>"
-        cells += f"<td style='{_oi_chg_style(spot_oi_chg.get(d), spot_chg_vmax)}'>{_fmt_num(spot_oi_chg.get(d), True)}</td>"
+        cells += f"<td style='{_flat_tint(px_pct_v)};color:{_sign_color(px_pct_v)}'>{_fmt_pct(px_pct_v)}</td>"
+        cells += f"<td style='{_flat_tint(oi_chg_v)};color:{_sign_color(oi_chg_v)};font-weight:600'>{_fmt_num(oi_chg_v, True)}</td>"
+        cells += f"<td style='{_flat_tint(spot_chg_v)};color:{_sign_color(spot_chg_v)};font-weight:600'>{_fmt_num(spot_chg_v, True)}</td>"
         cells += f"<td>{_fmt_num(non_spot_oi.get(d))}</td>"
-        cells += f"<td>{d_str}</td>"
-        sv = spread.get(d) if have_spread else np.nan
-        cells += f"<td style='{_oi_chg_style(sv, spread_vmax)}'>{sv:+.2f}</td>" if pd.notna(sv) else "<td></td>"
-        cells += f"<td style='{_oi_chg_style(spot_oi_5d.get(d), spot5d_vmax)}'>{_fmt_num(spot_oi_5d.get(d), True)}</td>"
+        cells += f"<td style='color:#9ca3af'>{d_str}</td>"
+        cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
+                  if pd.notna(spread_v) else "<td></td>")
+        cells += f"<td style='{_flat_tint(spot5d_v)};color:{_sign_color(spot5d_v)}'>{_fmt_num(spot5d_v, True)}</td>"
         rows.append(f"<tr>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -1331,7 +1352,11 @@ with tab_grid:
 # TAB 5 — SPOT OI REPORT (spot vs non-spot OI, COT-Tuesday-aligned snapshots)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_spot:
-    st.markdown(f"### {COMMODITIES[commodity][1]}  |  Spot OI Report")
+    st.markdown(
+        f"<div style='font-size:1rem;font-weight:600;color:#1a1a1a;margin-bottom:8px'>"
+        f"{COMMODITIES[commodity][1]} — Spot OI Report</div>",
+        unsafe_allow_html=True,
+    )
 
     spot_data = build_spot_oi_data(commodity, mt)
     st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
@@ -1344,14 +1369,21 @@ with tab_spot:
         leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
         leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
 
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            spot_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
-                                      key="spot_table_lookback")
-        with c2:
-            leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
-        with c3:
-            leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+        st.markdown("""<style>
+          .st-key-spot_controls div[data-testid="stSlider"],
+          .st-key-spot_controls div[data-testid="stSelectbox"] { margin-bottom:-12px; }
+          .st-key-spot_controls label p { font-size:.72rem !important; margin-bottom:1px !important; }
+        </style>""", unsafe_allow_html=True)
+
+        with st.container(key="spot_controls"):
+            c1, c2, c3 = st.columns([2, 1, 1])
+            with c1:
+                spot_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
+                                          key="spot_table_lookback")
+            with c2:
+                leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
+            with c3:
+                leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
 
         html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, mt)
         if html_spot is None:
