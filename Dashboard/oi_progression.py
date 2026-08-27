@@ -659,14 +659,14 @@ def build_spot_summary_html(data: dict) -> str:
         return (p1 - p0) / p0 * 100 if (d1 is not None and d0 is not None and p0) else np.nan
 
     css = """<style>
-      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:10px}
-      table.spotsum{border-collapse:collapse;width:100%;font-size:.72rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotsum th,table.spotsum td{padding:3px 9px;text-align:center;border-bottom:1px solid #f0f0f0}
+      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}
+      table.spotsum{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotsum th,table.spotsum td{padding:2px 6px;text-align:center;border-bottom:1px solid #f0f0f0}
       table.spotsum th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;
-        font-size:.64rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
+        font-size:.58rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
       table.spotsum td.lbl{text-align:left;font-weight:600;color:#1d1d1f}
-      table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.66rem}
-      table.spotsum tr.spacer td{padding:4px 0;border:none}
+      table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.62rem}
+      table.spotsum tr.spacer td{padding:3px 0;border:none}
       table.spotsum td.tot{font-weight:700;background:#fafafa}
     </style>"""
 
@@ -736,12 +736,14 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     root_len = len(commodity)
     spread_label = f"{leg1}-{leg2[root_len:]}" if have_spread else "Spread"
 
+    oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
+
     css = """<style>
       .spotgrid-wrap{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}
-      table.spotgrid{border-collapse:collapse;width:100%;font-size:.72rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotgrid th,table.spotgrid td{padding:2px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
+      table.spotgrid{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotgrid th,table.spotgrid td{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}
       table.spotgrid th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
-        font-size:.64rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
       table.spotgrid .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
         box-shadow:inset -1px 0 0 0 #e5e7eb}
       table.spotgrid .tot-cell{background:#fafafa;font-weight:700}
@@ -749,7 +751,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     </style>"""
 
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) +
-              "<th class='tot-cell'>Total</th><th>Price</th><th>+/-</th><th>OI +/-</th>"
+              "<th class='tot-cell'>Total</th><th>OI Chg</th><th>Price</th><th>+/-</th>"
               "<th>Spot OI +/-</th><th>Non Spot</th><th>Date</th>"
               f"<th>{spread_label}</th><th>Spot OI 5d</th></tr>")
 
@@ -766,9 +768,9 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
             spread.get(d) if have_spread else np.nan, spot_oi_5d.get(d),
         )
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
+        cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
         cells += f"<td style='{_flat_tint(px_pct_v)};color:{_sign_color(px_pct_v)}'>{_fmt_pct(px_pct_v)}</td>"
-        cells += f"<td style='{_flat_tint(oi_chg_v)};color:{_sign_color(oi_chg_v)};font-weight:600'>{_fmt_num(oi_chg_v, True)}</td>"
         cells += f"<td style='{_flat_tint(spot_chg_v)};color:{_sign_color(spot_chg_v)};font-weight:600'>{_fmt_num(spot_chg_v, True)}</td>"
         cells += f"<td>{_fmt_num(non_spot_oi.get(d))}</td>"
         cells += f"<td style='color:#9ca3af'>{d_str}</td>"
@@ -1371,8 +1373,9 @@ with tab_spot:
 
         st.markdown("""<style>
           .st-key-spot_controls div[data-testid="stSlider"],
-          .st-key-spot_controls div[data-testid="stSelectbox"] { margin-bottom:-12px; }
-          .st-key-spot_controls label p { font-size:.72rem !important; margin-bottom:1px !important; }
+          .st-key-spot_controls div[data-testid="stSelectbox"] { margin-bottom:-16px; }
+          .st-key-spot_controls label p { font-size:.68rem !important; margin-bottom:0 !important; }
+          .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
         </style>""", unsafe_allow_html=True)
 
         with st.container(key="spot_controls"):
