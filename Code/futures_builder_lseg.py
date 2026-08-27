@@ -197,6 +197,23 @@ def fnd_ltd(cfg: CommodityConfig, year: int, month: int):
 
 # ── LSEG SYMBOL RESOLUTION + FETCH ──────────────────────────────────────────
 
+# Circuit breaker: if LSEG itself is unresponsive (Workspace closed,
+# connection dropped, etc.), every single candidate for every contract for
+# every commodity times out — resolve_and_fetch tries 4 candidates per
+# contract, so a fully-dead session silently burns 10s of minutes retrying
+# calls that were never going to succeed, before anyone notices. Track
+# consecutive request EXCEPTIONS (not "empty response", which is a normal,
+# expected outcome for a candidate ticker that just doesn't exist) across
+# the whole run and abort fast once it's clearly not LSEG's data, it's the
+# connection.
+_CONSEC_FAILS = {"n": 0}
+_FAIL_THRESHOLD = 8
+
+
+class LSEGUnresponsive(RuntimeError):
+    pass
+
+
 def resolve_and_fetch(ld, root: str, month_code: str, year: int, start: str, end: str, bday):
     """Try the bare RIC then ^1/^2/^3 in order; return (symbol, dataframe) for
     whichever candidate actually has data, or (None, None) if none do.
@@ -212,7 +229,15 @@ def resolve_and_fetch(ld, root: str, month_code: str, year: int, start: str, end
         try:
             df = ld.get_history(universe=[cand], fields=FIELDS, start=start, end=end,
                                  interval="daily", count=10000)
-        except Exception:
+            _CONSEC_FAILS["n"] = 0  # the request itself went through — LSEG is alive
+        except Exception as e:
+            _CONSEC_FAILS["n"] += 1
+            if _CONSEC_FAILS["n"] >= _FAIL_THRESHOLD:
+                raise LSEGUnresponsive(
+                    f"{_FAIL_THRESHOLD} consecutive LSEG request failures — the session looks "
+                    f"unresponsive (check LSEG Workspace is open and connected). "
+                    f"Last error on {cand}: {e}"
+                ) from e
             continue
         if df is None or df.empty:
             continue
@@ -369,6 +394,10 @@ if __name__ == "__main__":
                 log.warning(f"  {comm}: no data fetched")
                 continue
             save(comm, new, args.full)
+    except LSEGUnresponsive as e:
+        log.error(f"ABORTING: {e}")
+        print(f"ABORTING: {e}", file=sys.stderr)  # run_updater.py's email body quotes stderr
+        sys.exit(1)
     finally:
         ld.close_session()
 
