@@ -723,15 +723,24 @@ def build_spot_summary_html(data: dict) -> str:
 
 @st.cache_data(max_entries=50, show_spinner=False)
 def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, leg2: str,
-                                mtime: float = 0.0):
-    """Daily grid: per-contract OI, Total, spot Price, day OI/Spot-OI
-    changes, Non-Spot OI, a user-picked calendar-spread, and the spot
-    month's 5-trading-day OI change."""
+                                price_source: str = "Spot (Most OI)", mtime: float = 0.0):
+    """Daily grid: per-contract OI, Total, Price (spot by default — see
+    price_source), day OI/Spot-OI changes, Non-Spot OI, a user-picked
+    calendar-spread, and the spot month's 5-trading-day OI change."""
     data = build_spot_oi_data(commodity, mtime)
     syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
-    total_oi = data["total_oi"]; spot_price = data["spot_price"]
+    total_oi = data["total_oi"]
     non_spot_oi = data["non_spot_oi"]; oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
-    spot_oi_5d = data["spot_oi_5d"]; price_chg_pct = data["price_chg_pct"]
+    spot_oi_5d = data["spot_oi_5d"]
+
+    if price_source != "Spot (Most OI)" and price_source in px_piv.columns:
+        # A fixed, single contract's price throughout — unlike Spot, this
+        # doesn't switch contracts as OI leadership rolls from one month
+        # to the next, useful for tracking one specific expiry's own price.
+        spot_price = px_piv[price_source]
+        price_chg_pct = spot_price.pct_change() * 100
+    else:
+        spot_price = data["spot_price"]; price_chg_pct = data["price_chg_pct"]
 
     if oi_piv.empty:
         return None
@@ -763,8 +772,9 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
       table.spotgrid tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
 
+    price_label = "Price (Spot)" if price_source == "Spot (Most OI)" else f"Price ({price_source})"
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
-              "<th class='tot-cell'>Total</th><th>OI Chg</th><th>Price</th><th>+/-</th>"
+              f"<th class='tot-cell'>Total</th><th>OI Chg</th><th>{price_label}</th><th>+/-</th>"
               "<th>Spot OI +/-</th><th>Non Spot</th><th>Date</th>"
               f"<th>{spread_label}</th><th>Spot OI 5d</th></tr>")
 
@@ -1450,13 +1460,22 @@ with tab_spot:
             </style>""", unsafe_allow_html=True)
 
             with st.container(key="spot_controls"):
-                c2, c3 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    price_opts = ["Spot (Most OI)"] + syms_spot
+                    price_source = st.selectbox(
+                        "Price", price_opts, index=0, key="spot_price_source",
+                        help="Spot (Most OI) is the default: whichever unexpired month "
+                             "currently has the highest OI. Pick a specific contract instead "
+                             "to track that one month's own price throughout, without it "
+                             "switching as OI leadership rolls to the next month.",
+                    )
                 with c2:
                     leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
                 with c3:
                     leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
 
-            html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, mt)
+            html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
             if html_spot is None:
                 st.info("No data in this window.")
             else:
