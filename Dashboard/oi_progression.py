@@ -730,7 +730,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     data = build_spot_oi_data(commodity, mtime)
     syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
     total_oi = data["total_oi"]
-    non_spot_oi = data["non_spot_oi"]; oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
+    oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
     spot_oi_5d = data["spot_oi_5d"]
 
     if price_source != "Spot (Most OI)" and price_source in px_piv.columns:
@@ -780,8 +780,8 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     else:
         price_label = f"Price ({price_source})"
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
-              f"<th class='tot-cell'>Total</th><th>OI Chg</th><th>{price_label}</th><th>+/-</th>"
-              "<th>Spot OI +/-</th><th>Non Spot</th><th>Non Spot Chg</th><th>Date</th>"
+              f"<th class='tot-cell'>Total</th><th>{price_label}</th><th>+/-</th>"
+              "<th>OI Chg</th><th>Spot OI +/-</th><th>Non Spot Chg</th><th>Date</th>"
               f"<th>{spread_label}</th><th>Spot OI 5d Avg</th></tr>")
 
     rows = []
@@ -802,11 +802,10 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         # Non Spot = Total - Spot.
         non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
-        cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
         cells += f"<td style='{_flat_tint(px_pct_v)};color:{_sign_color(px_pct_v)}'>{_fmt_pct(px_pct_v)}</td>"
+        cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
         cells += f"<td style='{_flat_tint(spot_chg_v)};color:{_sign_color(spot_chg_v)};font-weight:600'>{_fmt_num(spot_chg_v, True)}</td>"
-        cells += f"<td>{_fmt_num(non_spot_oi.get(d))}</td>"
         cells += f"<td style='{_flat_tint(non_spot_chg_v)};color:{_sign_color(non_spot_chg_v)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
         cells += f"<td style='color:#9ca3af'>{d_str}</td>"
         cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
@@ -860,6 +859,50 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='expchg-wrap'><table class='expchg'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_oi_spread_chart(commodity: str, table_lookback: int, oi_choice: str, leg1: str, leg2: str,
+                          mtime: float = 0.0):
+    """Dual-axis chart: an OI series (Spot by default, or any single
+    contract) on the left axis, the chosen calendar spread on the right —
+    same idea as the reference workbook's own OI-vs-spread chart."""
+    data = build_spot_oi_data(commodity, mtime)
+    oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    if oi_piv.empty:
+        return None
+    max_date = oi_piv.index.max()
+    cutoff = max_date - pd.Timedelta(days=table_lookback)
+    dates = sorted(d for d in oi_piv.index if d >= cutoff)
+    if not dates:
+        return None
+
+    if oi_choice == "Spot (Most OI)":
+        oi_series = data["spot_oi"].reindex(dates)
+        latest_spot = data["spot_sym"].iloc[-1] if len(data["spot_sym"]) else None
+        oi_name = f"Spot OI ({latest_spot})" if latest_spot else "Spot OI"
+    else:
+        oi_series = oi_piv[oi_choice].reindex(dates) if oi_choice in oi_piv.columns else pd.Series(dtype=float)
+        oi_name = f"{oi_choice} OI"
+
+    have_spread = leg1 in px_piv.columns and leg2 in px_piv.columns
+    root_len = len(commodity)
+    spread_name = f"{leg1}-{leg2[root_len:]} Spread" if have_spread else "Spread"
+    spread_series = (px_piv[leg1] - px_piv[leg2]).reindex(dates) if have_spread else pd.Series(dtype=float)
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Scatter(x=dates, y=oi_series.values, name=oi_name,
+                             line=dict(color="#1a56db", width=2)), secondary_y=False)
+    if have_spread:
+        fig.add_trace(go.Scatter(x=dates, y=spread_series.values, name=spread_name,
+                                 line=dict(color="#f59e0b", width=2)), secondary_y=True)
+    fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
+                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      legend=dict(orientation="h", y=1.12, x=0),
+                      margin=dict(l=55, r=55, t=30, b=40))
+    fig.update_yaxes(title_text=oi_name, secondary_y=False, gridcolor="rgba(0,0,0,.07)")
+    fig.update_yaxes(title_text=spread_name, secondary_y=True, showgrid=False)
+    return fig
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -924,8 +967,8 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_vol, tab_flow, tab_grid, tab_spot = st.tabs(
-    ["OI Progression", "Volume", "OI & Volume Flow", "Comprehensive Grid", "Spot OI Report"]
+tab_oi, tab_spot, tab_vol, tab_flow, tab_grid = st.tabs(
+    ["OI Progression", "All Futures OI", "Volume", "OI & Volume Flow", "Comprehensive Grid"]
 )
 
 
@@ -1434,11 +1477,6 @@ with tab_grid:
 # TAB 5 — SPOT OI REPORT (spot vs non-spot OI, COT-Tuesday-aligned snapshots)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_spot:
-    st.markdown(
-        f"<div style='font-size:1rem;font-weight:600;color:#1a1a1a;margin-bottom:8px'>"
-        f"{COMMODITIES[commodity][1]} — Spot OI Report</div>",
-        unsafe_allow_html=True,
-    )
     st.caption("Price = settlement of the **spot** contract — whichever unexpired month "
               "currently has the highest OI (shifts as contracts roll).")
 
@@ -1459,25 +1497,35 @@ with tab_spot:
           .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
         </style>""", unsafe_allow_html=True)
 
-        with st.expander("Controls", expanded=True):
+        with st.expander("Controls", expanded=False):
             with st.container(key="spot_controls"):
-                c0, c1, c2, c3 = st.columns(4)
+                c0, c1, c2, c3, c4 = st.columns(5)
                 with c0:
                     spot_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
                                                     value=90, step=10, key="spot_table_lookback")
                 with c1:
-                    price_opts = ["Spot (Most OI)"] + syms_spot
-                    price_source = st.selectbox(
+                    spot_label = f"Spot (Most OI: {latest_spot_sym})" if latest_spot_sym else "Spot (Most OI)"
+                    price_opts = [spot_label] + syms_spot
+                    price_source_sel = st.selectbox(
                         "Price", price_opts, index=0, key="spot_price_source",
                         help="Spot (Most OI) is the default: whichever unexpired month "
                              "currently has the highest OI. Pick a specific contract instead "
                              "to track that one month's own price throughout, without it "
                              "switching as OI leadership rolls to the next month.",
                     )
+                    price_source = "Spot (Most OI)" if price_source_sel == spot_label else price_source_sel
                 with c2:
                     leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
                 with c3:
                     leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+                with c4:
+                    oi_opts = [spot_label] + syms_spot
+                    oi_choice_sel = st.selectbox("OI (chart)", oi_opts, index=0, key="spot_oi_chart_choice")
+                    oi_choice = "Spot (Most OI)" if oi_choice_sel == spot_label else oi_choice_sel
+
+        fig_oi_spread = build_oi_spread_chart(commodity, spot_lookback, oi_choice, leg1, leg2, mt)
+        if fig_oi_spread is not None:
+            st.plotly_chart(fig_oi_spread, use_container_width=True)
 
         # ── 2. Spot OI Report — daily grid (always visible, no expander) ───────
         html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
@@ -1495,4 +1543,5 @@ with tab_spot:
                 st.markdown(html_expchg, unsafe_allow_html=True)
 
         # ── 4. Summary block (LAST + COT-Tuesday snapshots) — moved to bottom ──
-        st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
+        with st.expander("Change wrt COT date", expanded=False):
+            st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
