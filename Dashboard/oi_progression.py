@@ -1476,7 +1476,13 @@ with tab_grid:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — SPOT OI REPORT (spot vs non-spot OI, COT-Tuesday-aligned snapshots)
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_spot:
+@st.fragment
+def _render_all_futures_oi(commodity: str, mt: float):
+    """Fragment-scoped: without this, changing the lookback/price/spread
+    widgets below re-runs the ENTIRE script — including the other 4 tabs'
+    own expensive band/quadrant/volatility computations, even though
+    they're not visible. Wrapping this tab in @st.fragment confines a
+    rerun triggered by one of its own widgets to just this tab."""
     st.caption("Price = settlement of the **spot** contract — whichever unexpired month "
               "currently has the highest OI (shifts as contracts roll).")
 
@@ -1484,64 +1490,69 @@ with tab_spot:
     syms_spot = spot_data["syms"]
     if not syms_spot:
         st.info("No contract-month data available.")
+        return
+
+    latest_spot_sym = spot_data["spot_sym"].iloc[-1] if len(spot_data["spot_sym"]) else syms_spot[0]
+    leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
+    leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
+
+    # ── 1. Controls (lookback, price source, spread legs) ──────────────────
+    st.markdown("""<style>
+      .st-key-spot_controls div[data-testid="stSelectbox"],
+      .st-key-spot_controls div[data-testid="stNumberInput"] { margin-bottom:-16px; }
+      .st-key-spot_controls label p { font-size:.68rem !important; margin-bottom:0 !important; }
+      .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
+    </style>""", unsafe_allow_html=True)
+
+    with st.expander("Controls", expanded=False):
+        with st.container(key="spot_controls"):
+            c0, c1, c2, c3, c4 = st.columns(5)
+            with c0:
+                spot_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
+                                                value=90, step=10, key="spot_table_lookback")
+            with c1:
+                spot_label = f"Spot (Most OI: {latest_spot_sym})" if latest_spot_sym else "Spot (Most OI)"
+                price_opts = [spot_label] + syms_spot
+                price_source_sel = st.selectbox(
+                    "Price", price_opts, index=0, key="spot_price_source",
+                    help="Spot (Most OI) is the default: whichever unexpired month "
+                         "currently has the highest OI. Pick a specific contract instead "
+                         "to track that one month's own price throughout, without it "
+                         "switching as OI leadership rolls to the next month.",
+                )
+                price_source = "Spot (Most OI)" if price_source_sel == spot_label else price_source_sel
+            with c2:
+                leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
+            with c3:
+                leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
+            with c4:
+                oi_opts = [spot_label] + syms_spot
+                oi_choice_sel = st.selectbox("OI (chart)", oi_opts, index=0, key="spot_oi_chart_choice")
+                oi_choice = "Spot (Most OI)" if oi_choice_sel == spot_label else oi_choice_sel
+
+    fig_oi_spread = build_oi_spread_chart(commodity, spot_lookback, oi_choice, leg1, leg2, mt)
+    if fig_oi_spread is not None:
+        st.plotly_chart(fig_oi_spread, use_container_width=True)
+
+    # ── 2. Spot OI Report — daily grid (always visible, no expander) ───────
+    html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
+    if html_spot is None:
+        st.info("No data in this window.")
     else:
-        latest_spot_sym = spot_data["spot_sym"].iloc[-1] if len(spot_data["spot_sym"]) else syms_spot[0]
-        leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
-        leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
+        st.markdown(html_spot, unsafe_allow_html=True)
 
-        # ── 1. Controls (lookback, price source, spread legs) ──────────────────
-        st.markdown("""<style>
-          .st-key-spot_controls div[data-testid="stSelectbox"],
-          .st-key-spot_controls div[data-testid="stNumberInput"] { margin-bottom:-16px; }
-          .st-key-spot_controls label p { font-size:.68rem !important; margin-bottom:0 !important; }
-          .st-key-spot_controls div[data-baseweb="select"] { min-height:30px; }
-        </style>""", unsafe_allow_html=True)
-
-        with st.expander("Controls", expanded=False):
-            with st.container(key="spot_controls"):
-                c0, c1, c2, c3, c4 = st.columns(5)
-                with c0:
-                    spot_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
-                                                    value=90, step=10, key="spot_table_lookback")
-                with c1:
-                    spot_label = f"Spot (Most OI: {latest_spot_sym})" if latest_spot_sym else "Spot (Most OI)"
-                    price_opts = [spot_label] + syms_spot
-                    price_source_sel = st.selectbox(
-                        "Price", price_opts, index=0, key="spot_price_source",
-                        help="Spot (Most OI) is the default: whichever unexpired month "
-                             "currently has the highest OI. Pick a specific contract instead "
-                             "to track that one month's own price throughout, without it "
-                             "switching as OI leadership rolls to the next month.",
-                    )
-                    price_source = "Spot (Most OI)" if price_source_sel == spot_label else price_source_sel
-                with c2:
-                    leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="spot_spread_leg1")
-                with c3:
-                    leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="spot_spread_leg2")
-                with c4:
-                    oi_opts = [spot_label] + syms_spot
-                    oi_choice_sel = st.selectbox("OI (chart)", oi_opts, index=0, key="spot_oi_chart_choice")
-                    oi_choice = "Spot (Most OI)" if oi_choice_sel == spot_label else oi_choice_sel
-
-        fig_oi_spread = build_oi_spread_chart(commodity, spot_lookback, oi_choice, leg1, leg2, mt)
-        if fig_oi_spread is not None:
-            st.plotly_chart(fig_oi_spread, use_container_width=True)
-
-        # ── 2. Spot OI Report — daily grid (always visible, no expander) ───────
-        html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
-        if html_spot is None:
+    # ── 3. Daily OI Change per Expiry (collapsed) ──────────────────────────
+    with st.expander("Daily OI Change per Expiry", expanded=False):
+        html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
+        if html_expchg is None:
             st.info("No data in this window.")
         else:
-            st.markdown(html_spot, unsafe_allow_html=True)
+            st.markdown(html_expchg, unsafe_allow_html=True)
 
-        # ── 3. Daily OI Change per Expiry (collapsed) ──────────────────────────
-        with st.expander("Daily OI Change per Expiry", expanded=False):
-            html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
-            if html_expchg is None:
-                st.info("No data in this window.")
-            else:
-                st.markdown(html_expchg, unsafe_allow_html=True)
+    # ── 4. Summary block (LAST + COT-Tuesday snapshots) — moved to bottom ──
+    with st.expander("Change wrt COT date", expanded=False):
+        st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
 
-        # ── 4. Summary block (LAST + COT-Tuesday snapshots) — moved to bottom ──
-        with st.expander("Change wrt COT date", expanded=False):
-            st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
+
+with tab_spot:
+    _render_all_futures_oi(commodity, mt)
