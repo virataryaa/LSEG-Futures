@@ -628,6 +628,7 @@ def build_spot_oi_data(commodity: str, mtime: float = 0.0) -> dict:
         spot_sym=spot_sym, spot_oi=spot_oi, spot_price=spot_price, non_spot_oi=non_spot_oi,
         oi_chg=total_oi.diff(), spot_oi_chg=spot_oi.diff(), spot_oi_5d=spot_oi.diff(5),
         price_chg_pct=spot_price.pct_change() * 100,
+        per_contract_chg=oi_piv.diff(),
     )
 
 
@@ -668,14 +669,16 @@ def build_spot_summary_html(data: dict) -> str:
       table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.62rem}
       table.spotsum tr.spacer td{padding:3px 0;border:none}
       table.spotsum td.tot{font-weight:700;background:#fafafa}
+      table.spotsum tr.tue-row{background:#eceef1}
     </style>"""
 
     def value_row(label, d):
         if d is None:
             return ""
+        tr_cls = " class='tue-row'" if pd.Timestamp(d).weekday() == 1 else ""
         cells = "".join(f"<td>{_fmt_num(oi_row(d).get(s))}</td>" for s in syms)
         px_txt = f"{px(d):.2f}" if pd.notna(px(d)) else ""
-        return (f"<tr><td class='lbl'>{label}</td>{cells}"
+        return (f"<tr{tr_cls}><td class='lbl'>{label}</td>{cells}"
                 f"<td class='tot'>{_fmt_num(total_oi.get(d))}</td><td>{px_txt}</td></tr>")
 
     def delta_row(label, d1, d0):
@@ -747,6 +750,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
       table.spotgrid .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
         box-shadow:inset -1px 0 0 0 #e5e7eb}
       table.spotgrid .tot-cell{background:#fafafa;font-weight:700}
+      table.spotgrid tr.tue-row{background:#eceef1}
       table.spotgrid tbody tr:hover td{background-color:rgba(10,36,99,.04)}
     </style>"""
 
@@ -758,6 +762,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     rows = []
     for d in dates_desc:
         d_str = pd.Timestamp(d).strftime("%d/%m/%Y")
+        tr_cls = " class='tue-row'" if pd.Timestamp(d).weekday() == 1 else ""
         cells = f"<td class='date-cell'>{d_str}</td>"
         for s in syms:
             v = oi_piv.at[d, s] if s in oi_piv.columns else np.nan
@@ -777,9 +782,53 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
                   if pd.notna(spread_v) else "<td></td>")
         cells += f"<td style='{_flat_tint(spot5d_v)};color:{_sign_color(spot5d_v)}'>{_fmt_num(spot5d_v, True)}</td>"
-        rows.append(f"<tr>{cells}</tr>")
+        rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: float = 0.0):
+    """Day-over-day OI change for every individual contract month (not the
+    aggregate) — each column scaled to its own range, since a front month's
+    change dwarfs a far month's."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; per_chg = data["per_contract_chg"]
+
+    if per_chg.empty:
+        return None
+    max_date = per_chg.index.max()
+    cutoff = max_date - pd.Timedelta(days=table_lookback)
+    dates = [d for d in per_chg.index if d >= cutoff]
+    if not dates:
+        return None
+    dates_desc = sorted(dates, reverse=True)
+    col_vmax = per_chg.loc[dates].abs().max()
+
+    css = """<style>
+      .expchg-wrap{overflow:auto;max-height:480px;border:1px solid #e5e7eb;border-radius:6px}
+      table.expchg{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.expchg th,table.expchg td{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}
+      table.expchg th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;z-index:2;
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
+      table.expchg .date-cell{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
+        box-shadow:inset -1px 0 0 0 #e5e7eb}
+      table.expchg tr.tue-row{background:#eceef1}
+      table.expchg tbody tr:hover td{background-color:rgba(10,36,99,.04)}
+    </style>"""
+
+    header = "<tr><th class='date-cell'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
+    rows = []
+    for d in dates_desc:
+        d_str = pd.Timestamp(d).strftime("%d/%m/%Y")
+        tr_cls = " class='tue-row'" if pd.Timestamp(d).weekday() == 1 else ""
+        cells = f"<td class='date-cell'>{d_str}</td>"
+        for s in syms:
+            v = per_chg.at[d, s] if s in per_chg.columns else np.nan
+            cells += f"<td style='{_oi_chg_style(v, col_vmax.get(s))}'>{_fmt_num(v, True)}</td>"
+        rows.append(f"<tr{tr_cls}>{cells}</tr>")
+
+    return f"{css}<div class='expchg-wrap'><table class='expchg'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -1393,3 +1442,13 @@ with tab_spot:
             st.info("No data in this window.")
         else:
             st.markdown(html_spot, unsafe_allow_html=True)
+
+        st.markdown(
+            "<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
+            "Daily OI Change per Expiry</div>", unsafe_allow_html=True,
+        )
+        html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
+        if html_expchg is None:
+            st.info("No data in this window.")
+        else:
+            st.markdown(html_expchg, unsafe_allow_html=True)
