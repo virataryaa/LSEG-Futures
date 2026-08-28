@@ -925,7 +925,7 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=syms, y=oi_row.reindex(syms).values, name=f"OI ({d_label})",
-                         marker_color="rgba(120,120,120,.55)",
+                         marker_color="rgba(96,165,250,.65)",
                          hovertemplate="%{x}<br>OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
     if have_older:
         oi_row_old = oi_piv.loc[older_date]
@@ -936,12 +936,12 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
         fig.update_layout(barmode="group")
 
     fig.add_trace(go.Scatter(x=syms, y=px_row.reindex(syms).values, name=f"Price ({d_label})", mode="lines+markers",
-                             line=dict(color="#1a56db", width=2), marker=dict(size=7),
+                             line=dict(color="#1e3a8a", width=2), marker=dict(size=7),
                              hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
     if have_older:
         px_row_old = px_piv.loc[older_date]
         fig.add_trace(go.Scatter(x=syms, y=px_row_old.reindex(syms).values, name=f"Price ({old_label})",
-                                 mode="lines+markers", line=dict(color="#f59e0b", width=2, dash="dash"),
+                                 mode="lines+markers", line=dict(color="#fdba74", width=2, dash="dash"),
                                  marker=dict(size=6),
                                  hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
 
@@ -1846,7 +1846,7 @@ def _render_spreads_tab(commodity: str, mt: float):
 
     dc1, dc2 = st.columns(2)
     with dc1:
-        snapshot_date = _calendar_date("Snapshot Date", all_dates, min_d, max_d, max_d, "spreads_snapshot")
+        snapshot_date = _calendar_date("New Date", all_dates, min_d, max_d, max_d, "spreads_snapshot")
     with dc2:
         older_date = _calendar_date("Older Date", all_dates, min_d, max_d, default_older_d, "spreads_older")
 
@@ -1868,7 +1868,8 @@ def _render_spreads_tab(commodity: str, mt: float):
 
     # ── Spread Matrix — every pair, not just adjacent, two tables side by side ─
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
-               "Spread Matrix (row minus column)</div>", unsafe_allow_html=True)
+               f"Spread Matrix (row minus column) — New Date: "
+               f"{pd.Timestamp(snapshot_date).strftime('%d %b %Y')}</div>", unsafe_allow_html=True)
     st.caption("Each pair shown once — row's contract is the earlier month, so a cell is "
               "\"row price minus column price\" for that combination, e.g. the CCZ6 row / "
               "CCH7 column cell is CCZ6 - CCH7.")
