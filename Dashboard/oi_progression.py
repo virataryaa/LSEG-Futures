@@ -1002,18 +1002,18 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
     dates_v = [d for d, ok in zip(dates, valid) if ok]
 
     fig = go.Figure(go.Scatter(
-        x=px_chg_s[valid].values, y=oi_chg_s[valid].values, mode="markers",
+        x=oi_chg_s[valid].values, y=px_chg_s[valid].values, mode="markers",
         marker=dict(size=7, color="#1a56db", opacity=0.65, line=dict(width=0.5, color="#fff")),
         text=[d.strftime("%d %b %Y") for d in dates_v],
-        hovertemplate="%{text}<br>Price Chg: %{x:+.2f}%<br>OI Chg: %{y:+,.0f}<extra></extra>",
+        hovertemplate="%{text}<br>OI Chg: %{x:+,.0f}<br>Price Chg: %{y:+.2f}%<extra></extra>",
     ))
     fig.add_hline(y=0, line_color="#e5e7eb", line_width=1)
     fig.add_vline(x=0, line_color="#e5e7eb", line_width=1)
     fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
                       font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
                       showlegend=False, margin=dict(l=55, r=25, t=30, b=40),
-                      xaxis=dict(title="Price Change (%)", gridcolor="rgba(0,0,0,.07)"),
-                      yaxis=dict(title=f"{name} OI Change (lots)", gridcolor="rgba(0,0,0,.07)"))
+                      xaxis=dict(title=f"{name} OI Change (lots)", gridcolor="rgba(0,0,0,.07)"),
+                      yaxis=dict(title="Price Change (%)", gridcolor="rgba(0,0,0,.07)"))
     return fig
 
 
@@ -1678,11 +1678,12 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
     leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
 
     all_dates = list(spot_data["oi_piv"].index)
+    min_d, max_d = pd.Timestamp(all_dates[0]).date(), pd.Timestamp(all_dates[-1]).date()
 
     _spot_controls_css("charts_controls")
     with st.expander("Controls", expanded=False):
         with st.container(key="charts_controls"):
-            c0, c1, c2, c3, c4 = st.columns(5)
+            c0, c1, c2, c3 = st.columns(4)
             with c0:
                 chart_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
                                                  value=90, step=10, key="charts_table_lookback")
@@ -1695,16 +1696,15 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
                 leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="charts_spread_leg1")
             with c3:
                 leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="charts_spread_leg2")
-            with c4:
-                snapshot_date = st.select_slider(
-                    "Snapshot Date", options=all_dates, value=all_dates[-1] if all_dates else None,
-                    format_func=lambda d: pd.Timestamp(d).strftime("%d %b %Y"), key="charts_snapshot_date",
-                    help="Which date the Term Structure and Curve Spread charts below show.",
-                )
 
     fig_oi_spread = build_oi_spread_chart(commodity, chart_lookback, oi_choice, leg1, leg2, mt)
     if fig_oi_spread is not None:
         st.plotly_chart(fig_oi_spread, use_container_width=True)
+
+    # ── Term Structure + Curve Spread — own calendar date picker right above ──
+    picked_date = st.date_input("Snapshot Date", value=max_d, min_value=min_d, max_value=max_d,
+                                key="charts_snapshot_date")
+    snapshot_date = min(all_dates, key=lambda d: abs((d - pd.Timestamp(picked_date)).days))
 
     cc1, cc2 = st.columns(2)
     with cc1:
@@ -1716,9 +1716,13 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
         if fig_curve_spread is not None:
             st.plotly_chart(fig_curve_spread, use_container_width=True)
 
+    # ── OI Change vs Price Change — own "which future" selector right above ──
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
                "OI Change vs Price Change</div>", unsafe_allow_html=True)
-    fig_scatter = build_oi_price_scatter(commodity, chart_lookback, oi_choice, mt)
+    scatter_opts = [spot_label] + syms_spot
+    scatter_sel = st.selectbox("Which future to study?", scatter_opts, index=0, key="charts_scatter_future")
+    scatter_choice = "Spot (Most OI)" if scatter_sel == spot_label else scatter_sel
+    fig_scatter = build_oi_price_scatter(commodity, chart_lookback, scatter_choice, mt)
     if fig_scatter is not None:
         st.plotly_chart(fig_scatter, use_container_width=True)
 
