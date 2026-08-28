@@ -1017,6 +1017,85 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
     return fig
 
 
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_spread_matrix_html(commodity: str, snapshot_date, view: str, mtime: float = 0.0):
+    """Full N x N matrix of every possible calendar-spread combination
+    (row month minus column month), for one date — not just adjacent
+    pairs. Two views on the same grid:
+      'Price Spread'      — the spread itself, diverging red/green.
+      'Min OI (Liquidity)'— min(OI of the two legs), a proxy for how much
+        size that specific combination could actually trade at (a wide
+        spread between two thin deferred months isn't very tradeable;
+        this flags that directly instead of leaving it to be inferred)."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
+    if len(syms) < 2 or snapshot_date not in px_piv.index:
+        return None
+    px_row = px_piv.loc[snapshot_date]
+    oi_row = oi_piv.loc[snapshot_date]
+
+    css = """<style>
+      .sprmat-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px}
+      table.sprmat{border-collapse:collapse;width:100%;font-size:.68rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.sprmat th,table.sprmat td{padding:4px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
+      table.sprmat th{background:#fafafa;color:#1a1a1a;font-weight:600;font-size:.62rem;
+        text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
+      table.sprmat td.row-hdr{background:#fafafa;font-weight:600;text-align:left}
+      table.sprmat td.diag{background:#f4f4f5;color:#cbd5e1}
+    </style>"""
+
+    header = "<tr><th></th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
+    rows = []
+    if view == "Price Spread":
+        vmax = 0.0
+        vals = {}
+        for r in syms:
+            for c in syms:
+                if r == c or pd.isna(px_row.get(r)) or pd.isna(px_row.get(c)):
+                    continue
+                v = px_row[r] - px_row[c]
+                vals[(r, c)] = v
+                vmax = max(vmax, abs(v))
+        vmax = vmax or 1.0
+        for r in syms:
+            cells = f"<td class='row-hdr'>{r}</td>"
+            for c in syms:
+                if r == c:
+                    cells += "<td class='diag'>—</td>"
+                    continue
+                v = vals.get((r, c))
+                if v is None:
+                    cells += "<td></td>"
+                else:
+                    cells += (f"<td style='{_oi_chg_style(v, vmax)}'>{v:+.2f}</td>")
+            rows.append(f"<tr>{cells}</tr>")
+    else:  # Min OI (Liquidity)
+        vmax = 0.0
+        vals = {}
+        for r in syms:
+            for c in syms:
+                if r == c or pd.isna(oi_row.get(r)) or pd.isna(oi_row.get(c)):
+                    continue
+                v = min(oi_row[r], oi_row[c])
+                vals[(r, c)] = v
+                vmax = max(vmax, v)
+        vmax = vmax or 1.0
+        for r in syms:
+            cells = f"<td class='row-hdr'>{r}</td>"
+            for c in syms:
+                if r == c:
+                    cells += "<td class='diag'>—</td>"
+                    continue
+                v = vals.get((r, c))
+                if v is None:
+                    cells += "<td></td>"
+                else:
+                    cells += f"<td style='{_bar_style(v, vmax, 'rgba(10,36,99,.16)')}'>{v:,.0f}</td>"
+            rows.append(f"<tr>{cells}</tr>")
+
+    return f"{css}<div class='sprmat-wrap'><table class='sprmat'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## Settings")
@@ -1715,6 +1794,20 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
         fig_curve_spread = build_curve_spread_chart(commodity, snapshot_date, mt)
         if fig_curve_spread is not None:
             st.plotly_chart(fig_curve_spread, use_container_width=True)
+
+    # ── Spread Matrix — every pair, not just adjacent ────────────────────────
+    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
+               "Spread Matrix (row minus column)</div>", unsafe_allow_html=True)
+    matrix_view = st.radio("View", ["Price Spread", "Min OI (Liquidity)"], horizontal=True,
+                           key="charts_matrix_view",
+                           help="Price Spread: row month's price minus column month's price. "
+                                "Min OI (Liquidity): the smaller of the two legs' OI — a spread's "
+                                "thinner leg caps how much size it can actually trade at.")
+    html_matrix = build_spread_matrix_html(commodity, snapshot_date, matrix_view, mt)
+    if html_matrix is None:
+        st.info("No data for this date.")
+    else:
+        st.markdown(html_matrix, unsafe_allow_html=True)
 
     # ── OI Change vs Price Change — own "which future" selector right above ──
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
