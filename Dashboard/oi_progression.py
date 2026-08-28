@@ -148,22 +148,32 @@ def _compute_dte_max(commodity, month, hist_year_range, mtime=0.0):
     return int(round(peak_dtes.mean()))
 
 
+def _hist_band(dense_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
+    """min/max/mean/q25/q75 of metric_col per days_to_expiry, then a 7-point
+    rolling smooth. Uses groupby(...).quantile() (pandas' own vectorized
+    path) rather than .agg(hist_q25=lambda x: x.quantile(...)) — the lambda
+    form calls quantile once per group via slow Python dispatch instead of
+    pandas' optimized C-level implementation; on a wide days-to-expiry range
+    this was the single biggest cost in a cold commodity switch (~5s of a
+    ~10s total in profiling, from ~23k quantile calls)."""
+    g = dense_df.groupby("days_to_expiry")[metric_col]
+    band = g.agg(hist_min="min", hist_max="max", hist_mean="mean").reset_index()
+    q25 = g.quantile(0.25).rename("hist_q25").reset_index()
+    q75 = g.quantile(0.75).rename("hist_q75").reset_index()
+    band = band.merge(q25, on="days_to_expiry").merge(q75, on="days_to_expiry")
+    band = band.sort_values("days_to_expiry")
+    for c in ["hist_mean", "hist_q25", "hist_q75"]:
+        band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
+    return band
+
+
 def _band_from_norm(dm, hist_syms, hist_year_range):
     hist_norm = dm[
         dm["ice_symbol"].isin(hist_syms) &
         dm["year"].between(hist_year_range[0], hist_year_range[1])
     ]
     hist_norm_dense = _densify_by_dte(hist_norm, "open_interest")
-    band = (
-        hist_norm_dense.groupby("days_to_expiry")["open_interest"]
-        .agg(hist_min="min", hist_max="max", hist_mean="mean",
-             hist_q25=lambda x: x.quantile(0.25),
-             hist_q75=lambda x: x.quantile(0.75))
-        .reset_index().sort_values("days_to_expiry")
-    )
-    for c in ["hist_mean", "hist_q25", "hist_q75"]:
-        band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
-    return band
+    return _hist_band(hist_norm_dense, "open_interest")
 
 
 @st.cache_data(max_entries=200, show_spinner=False)
@@ -256,16 +266,7 @@ def compute_band(commodity, month, hist_year_range, metric_col,
     ]
 
     hist_dense = _densify_by_dte(hist_df, metric_col)
-
-    band = (
-        hist_dense.groupby("days_to_expiry")[metric_col]
-        .agg(hist_min="min", hist_max="max", hist_mean="mean",
-             hist_q25=lambda x: x.quantile(0.25),
-             hist_q75=lambda x: x.quantile(0.75))
-        .reset_index().sort_values("days_to_expiry")
-    )
-    for c in ["hist_mean", "hist_q25", "hist_q75"]:
-        band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
+    band = _hist_band(hist_dense, metric_col)
 
     curr_df = dm[dm["ice_symbol"] == active_syms[0]].sort_values("Date").copy()
     return band, curr_df, active_syms, hist_syms
