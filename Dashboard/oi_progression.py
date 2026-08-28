@@ -589,20 +589,6 @@ def _sign_color(v) -> str:
     return "#16a34a" if v > 0 else "#dc2626"
 
 
-def _liquidity_color(v, vmax) -> str:
-    """Red (thin) -> amber (mid) -> green (deep), scaled by v/vmax — a
-    3-stop traffic-light read for a magnitude-only value (OI), using the
-    same red/amber/green already used for sign elsewhere in this file."""
-    if pd.isna(v) or not vmax:
-        return "#9ca3af"
-    t = min(abs(float(v)) / vmax, 1.0)
-    stops = [(220, 38, 38), (217, 119, 6), (22, 163, 74)]  # red, amber, green
-    seg, t2 = (0, t / 0.5) if t < 0.5 else (1, (t - 0.5) / 0.5)
-    (r0, g0, b0), (r1, g1, b1) = stops[seg], stops[seg + 1]
-    r, g, b = (round(r0 + t2 * (r1 - r0)), round(g0 + t2 * (g1 - g0)), round(b0 + t2 * (b1 - b0)))
-    return f"rgb({r},{g},{b})"
-
-
 def _spot_series(oi_piv: pd.DataFrame, px_piv: pd.DataFrame):
     """For every date, find whichever contract has the highest OI (the
     'spot'/most-active month) and pull its OI and settlement price — the
@@ -941,10 +927,8 @@ def build_term_structure_chart(commodity: str, snapshot_date, mtime: float = 0.0
                              hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
     fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
                       font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
-                      legend=dict(orientation="h", y=1.12, x=0),
-                      margin=dict(l=55, r=55, t=30, b=40),
-                      title=dict(text=f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')}",
-                                 font=dict(size=12), x=0.01))
+                      legend=dict(orientation="h", y=1.08, x=0),
+                      margin=dict(l=55, r=55, t=30, b=40))
     fig.update_yaxes(title_text="Open Interest", secondary_y=False, gridcolor="rgba(0,0,0,.07)")
     fig.update_yaxes(title_text="Price", secondary_y=True, showgrid=False)
     return fig
@@ -978,10 +962,8 @@ def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
     fig.add_hline(y=0, line_color="#cccccc", line_width=1)
     fig.update_layout(height=340, plot_bgcolor="#fff", paper_bgcolor="#fff",
                       font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
-                      showlegend=False, margin=dict(l=55, r=25, t=30, b=40),
-                      yaxis=dict(title="Spread", gridcolor="rgba(0,0,0,.07)"),
-                      title=dict(text=f"Curve Spreads — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')}",
-                                 font=dict(size=12), x=0.01))
+                      showlegend=False, margin=dict(l=55, r=25, t=20, b=40),
+                      yaxis=dict(title="Spread", gridcolor="rgba(0,0,0,.07)"))
     return fig
 
 
@@ -1031,39 +1013,12 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
     return fig
 
 
-@st.cache_data(max_entries=50, show_spinner=False)
-def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
-    """Full N x N matrix of every possible calendar-spread combination (row
-    month minus column month), for one date — not just adjacent pairs.
-    Each cell shows both signals together: the spread itself (bold,
-    colored by sign) and, as small subtext, min(OI of the two legs) — a
-    spread is only as tradeable as its thinner leg, so this puts the
-    liquidity check right next to the number it qualifies, instead of a
-    separate toggled-away view."""
-    data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
-    if len(syms) < 2 or snapshot_date not in px_piv.index:
-        return None
-    px_row = px_piv.loc[snapshot_date]
-    oi_row = oi_piv.loc[snapshot_date]
-
-    css = """<style>
-      .sprmat-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px}
-      table.sprmat{border-collapse:collapse;width:100%;font-size:.68rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.sprmat th,table.sprmat td{padding:3px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
-      table.sprmat th{background:#fafafa;color:#1a1a1a;font-weight:600;font-size:.62rem;
-        text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
-      table.sprmat td.row-hdr{background:#fafafa;font-weight:600;text-align:left}
-      table.sprmat td.blank{background:#fbfbfc}
-      table.sprmat .spr-val{font-weight:600;line-height:1.2}
-      table.sprmat .spr-oi{font-size:.6rem;font-weight:600;line-height:1.2}
-    </style>"""
-
-    # Upper triangle only (row = earlier month, col = later month, since syms
-    # is LTD-ascending) — each pair shown once as "earlier minus later", same
-    # convention as the adjacent Curve Spread chart.
+def _spread_pairs(syms: list, px_row, oi_row) -> dict:
+    """Upper-triangle-only (row = earlier month, col = later month, since
+    syms is LTD-ascending) pairwise price spread and min-OI, keyed by
+    (row_idx, col_idx)."""
     n = len(syms)
-    pairs = []
+    out = {}
     for i in range(n):
         for j in range(i + 1, n):
             r, c = syms[i], syms[j]
@@ -1072,10 +1027,37 @@ def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
                 continue
             o1, o2 = oi_row.get(r), oi_row.get(c)
             min_oi = min(o1, o2) if pd.notna(o1) and pd.notna(o2) else None
-            pairs.append((i, j, p1 - p2, min_oi))
-    oi_vmax = max((p[3] for p in pairs if p[3] is not None), default=1.0) or 1.0
-    by_ij = {(i, j): (spread, min_oi) for i, j, spread, min_oi in pairs}
+            out[(i, j)] = (p1 - p2, min_oi)
+    return out
 
+
+def _matrix_table_open(css_extra: str = "") -> str:
+    return f"""<style>
+      .sprmat-wrap{{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px}}
+      table.sprmat{{border-collapse:collapse;width:100%;font-size:.68rem;font-family:'Inter',sans-serif;white-space:nowrap}}
+      table.sprmat th,table.sprmat td{{padding:3px 8px;text-align:center;border-bottom:1px solid #f4f4f5}}
+      table.sprmat th{{background:#fafafa;color:#1a1a1a;font-weight:600;font-size:.62rem;
+        text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}}
+      table.sprmat td.row-hdr{{background:#fafafa;font-weight:600;text-align:left}}
+      table.sprmat td.blank{{background:#fbfbfc}}
+      {css_extra}
+    </style>"""
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_min_oi_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
+    """Min(OI of the two legs) for every calendar-spread combination — a
+    spread is only as tradeable as its thinner leg. White-to-green
+    heatmap: deeper green = more size actually tradeable."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
+    if len(syms) < 2 or snapshot_date not in px_piv.index:
+        return None
+    pairs = _spread_pairs(syms, px_piv.loc[snapshot_date], oi_piv.loc[snapshot_date])
+    oi_vals = [v[1] for v in pairs.values() if v[1] is not None]
+    oi_min, oi_max = (min(oi_vals), max(oi_vals)) if oi_vals else (0, 1)
+
+    css = _matrix_table_open()
     header = "<tr><th></th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
     rows = []
     for i, r in enumerate(syms):
@@ -1084,18 +1066,44 @@ def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
             if j <= i:
                 cells += "<td class='blank'></td>"
                 continue
-            cell = by_ij.get((i, j))
+            cell = pairs.get((i, j))
+            if cell is None or cell[1] is None:
+                cells += "<td></td>"
+                continue
+            min_oi = cell[1]
+            cells += f"<td style='{_oi_heatmap_style(min_oi, oi_min, oi_max)};font-weight:600'>{_fmt_num(min_oi)}</td>"
+        rows.append(f"<tr>{cells}</tr>")
+    return f"{css}<div class='sprmat-wrap'><table class='sprmat'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_price_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
+    """The price spread itself for every calendar-spread combination, as an
+    Excel-style diverging data bar."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
+    if len(syms) < 2 or snapshot_date not in px_piv.index:
+        return None
+    pairs = _spread_pairs(syms, px_piv.loc[snapshot_date], oi_piv.loc[snapshot_date])
+    vmax = max((abs(v[0]) for v in pairs.values()), default=1.0) or 1.0
+
+    css = _matrix_table_open()
+    header = "<tr><th></th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
+    rows = []
+    for i, r in enumerate(syms):
+        cells = f"<td class='row-hdr'>{r}</td>"
+        for j, c in enumerate(syms):
+            if j <= i:
+                cells += "<td class='blank'></td>"
+                continue
+            cell = pairs.get((i, j))
             if cell is None:
                 cells += "<td></td>"
                 continue
-            spread, min_oi = cell
-            oi_txt = (f"<div class='spr-oi' style='color:{_liquidity_color(min_oi, oi_vmax)}'>"
-                      f"{_fmt_num(min_oi)}</div>") if min_oi is not None else ""
-            cells += (f"<td style='{_flat_tint(spread)}'>"
-                      f"<div class='spr-val' style='color:{_sign_color(spread)}'>{spread:+.2f}</div>"
-                      f"{oi_txt}</td>")
+            spread = cell[0]
+            cells += (f"<td style='{_oi_chg_style(spread, vmax)};color:{_sign_color(spread)};font-weight:600'>"
+                      f"{spread:+.2f}</td>")
         rows.append(f"<tr>{cells}</tr>")
-
     return f"{css}<div class='sprmat-wrap'><table class='sprmat'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
 
 
@@ -1161,8 +1169,8 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_spot, tab_spot_charts, tab_vol, tab_flow, tab_grid = st.tabs(
-    ["OI Progression", "All Futures OI Recap", "All Futures OI Charts",
+tab_oi, tab_spot, tab_spot_charts, tab_spreads, tab_vol, tab_flow, tab_grid = st.tabs(
+    ["OI Progression", "All Futures OI Recap", "All Futures OI Charts", "Spreads",
      "Volume", "OI & Volume Flow", "Comprehensive Grid"]
 )
 
@@ -1759,9 +1767,6 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
     leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
     leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
 
-    all_dates = list(spot_data["oi_piv"].index)
-    min_d, max_d = pd.Timestamp(all_dates[0]).date(), pd.Timestamp(all_dates[-1]).date()
-
     _spot_controls_css("charts_controls")
     with st.expander("Controls", expanded=False):
         with st.container(key="charts_controls"):
@@ -1783,34 +1788,6 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
     if fig_oi_spread is not None:
         st.plotly_chart(fig_oi_spread, use_container_width=True)
 
-    # ── Term Structure + Curve Spread — own calendar date picker right above ──
-    picked_date = st.date_input("Snapshot Date", value=max_d, min_value=min_d, max_value=max_d,
-                                key="charts_snapshot_date")
-    snapshot_date = min(all_dates, key=lambda d: abs((d - pd.Timestamp(picked_date)).days))
-
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        fig_term = build_term_structure_chart(commodity, snapshot_date, mt)
-        if fig_term is not None:
-            st.plotly_chart(fig_term, use_container_width=True)
-    with cc2:
-        fig_curve_spread = build_curve_spread_chart(commodity, snapshot_date, mt)
-        if fig_curve_spread is not None:
-            st.plotly_chart(fig_curve_spread, use_container_width=True)
-
-    # ── Spread Matrix — every pair, not just adjacent ────────────────────────
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
-               "Spread Matrix (row minus column)</div>", unsafe_allow_html=True)
-    st.caption("Each pair shown once — row's contract is the earlier month, so a cell is "
-              "\"row price minus column price\" for that combination, e.g. the CCZ6 row / "
-              "CCH7 column cell is CCZ6 - CCH7. The small grey number is the smaller of the "
-              "two legs' OI — a spread is only as tradeable as its thinner leg.")
-    html_matrix = build_spread_matrix_html(commodity, snapshot_date, mt)
-    if html_matrix is None:
-        st.info("No data for this date.")
-    else:
-        st.markdown(html_matrix, unsafe_allow_html=True)
-
     # ── OI Change vs Price Change — own "which future" selector right above ──
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
                "OI Change vs Price Change</div>", unsafe_allow_html=True)
@@ -1822,8 +1799,69 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
         st.plotly_chart(fig_scatter, use_container_width=True)
 
 
+@st.fragment
+def _render_spreads_tab(commodity: str, mt: float):
+    """Fragment-scoped for the same reason as the other tabs above. All
+    snapshot-date, cross-sectional views (term structure, curve spreads,
+    the full spread matrix) live here — distinct from the time-series
+    charts in 'All Futures OI Charts'."""
+    spot_data = build_spot_oi_data(commodity, mt)
+    syms_spot = spot_data["syms"]
+    if not syms_spot:
+        st.info("No contract-month data available.")
+        return
+
+    all_dates = list(spot_data["oi_piv"].index)
+    min_d, max_d = pd.Timestamp(all_dates[0]).date(), pd.Timestamp(all_dates[-1]).date()
+    picked_date = st.date_input("Snapshot Date", value=max_d, min_value=min_d, max_value=max_d,
+                                key="spreads_snapshot_date")
+    snapshot_date = min(all_dates, key=lambda d: abs((d - pd.Timestamp(picked_date)).days))
+
+    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
+               f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')}</div>",
+               unsafe_allow_html=True)
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        fig_term = build_term_structure_chart(commodity, snapshot_date, mt)
+        if fig_term is not None:
+            st.plotly_chart(fig_term, use_container_width=True)
+    with cc2:
+        st.markdown("<div style='font-size:.78rem;font-weight:600;color:#1a1a1a;margin-bottom:4px'>"
+                   "Curve Spreads (adjacent months)</div>", unsafe_allow_html=True)
+        fig_curve_spread = build_curve_spread_chart(commodity, snapshot_date, mt)
+        if fig_curve_spread is not None:
+            st.plotly_chart(fig_curve_spread, use_container_width=True)
+
+    # ── Spread Matrix — every pair, not just adjacent, two tables side by side ─
+    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
+               "Spread Matrix (row minus column)</div>", unsafe_allow_html=True)
+    st.caption("Each pair shown once — row's contract is the earlier month, so a cell is "
+              "\"row price minus column price\" for that combination, e.g. the CCZ6 row / "
+              "CCH7 column cell is CCZ6 - CCH7.")
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        st.markdown("<div style='font-size:.72rem;font-weight:600;color:#6b7280;margin-bottom:4px'>"
+                   "Min OI (Liquidity)</div>", unsafe_allow_html=True)
+        html_oi = build_min_oi_matrix_html(commodity, snapshot_date, mt)
+        if html_oi is None:
+            st.info("No data for this date.")
+        else:
+            st.markdown(html_oi, unsafe_allow_html=True)
+    with mc2:
+        st.markdown("<div style='font-size:.72rem;font-weight:600;color:#6b7280;margin-bottom:4px'>"
+                   "Price Spread</div>", unsafe_allow_html=True)
+        html_price = build_price_spread_matrix_html(commodity, snapshot_date, mt)
+        if html_price is None:
+            st.info("No data for this date.")
+        else:
+            st.markdown(html_price, unsafe_allow_html=True)
+
+
 with tab_spot:
     _render_all_futures_oi_recap(commodity, mt)
 
 with tab_spot_charts:
     _render_all_futures_oi_charts(commodity, mt)
+
+with tab_spreads:
+    _render_spreads_tab(commodity, mt)
