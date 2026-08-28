@@ -1530,9 +1530,10 @@ def _render_all_futures_oi(commodity: str, mt: float):
                 oi_choice_sel = st.selectbox("OI (chart)", oi_opts, index=0, key="spot_oi_chart_choice")
                 oi_choice = "Spot (Most OI)" if oi_choice_sel == spot_label else oi_choice_sel
 
-    fig_oi_spread = build_oi_spread_chart(commodity, spot_lookback, oi_choice, leg1, leg2, mt)
-    if fig_oi_spread is not None:
-        st.plotly_chart(fig_oi_spread, use_container_width=True)
+    with st.expander("OI vs Spread Chart", expanded=False):
+        fig_oi_spread = build_oi_spread_chart(commodity, spot_lookback, oi_choice, leg1, leg2, mt)
+        if fig_oi_spread is not None:
+            st.plotly_chart(fig_oi_spread, use_container_width=True)
 
     # ── 2. Spot OI Report — daily grid (always visible, no expander) ───────
     html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
