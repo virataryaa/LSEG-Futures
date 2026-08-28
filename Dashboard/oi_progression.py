@@ -906,6 +906,117 @@ def build_oi_spread_chart(commodity: str, table_lookback: int, oi_choice: str, l
     return fig
 
 
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_term_structure_chart(commodity: str, snapshot_date, mtime: float = 0.0):
+    """Term structure snapshot for one date: OI per contract as grey bars
+    (left axis), price per contract as a line (right axis) — the curve
+    shape (contango/backwardation) and where OI sits along it, at a glance."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    if not syms or snapshot_date not in oi_piv.index:
+        return None
+    oi_row = oi_piv.loc[snapshot_date]
+    px_row = px_piv.loc[snapshot_date]
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=syms, y=oi_row.reindex(syms).values, name="OI",
+                         marker_color="rgba(120,120,120,.55)",
+                         hovertemplate="%{x}<br>OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
+    fig.add_trace(go.Scatter(x=syms, y=px_row.reindex(syms).values, name="Price", mode="lines+markers",
+                             line=dict(color="#1a56db", width=2), marker=dict(size=7),
+                             hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
+    fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
+                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      legend=dict(orientation="h", y=1.12, x=0),
+                      margin=dict(l=55, r=55, t=30, b=40),
+                      title=dict(text=f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')}",
+                                 font=dict(size=12), x=0.01))
+    fig.update_yaxes(title_text="Open Interest", secondary_y=False, gridcolor="rgba(0,0,0,.07)")
+    fig.update_yaxes(title_text="Price", secondary_y=True, showgrid=False)
+    return fig
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
+    """Every adjacent-month spread across the whole active curve, for one
+    date — where the curve is steepest/most inverted, at a glance (vs. the
+    OI-vs-Spread chart's single user-picked pair)."""
+    data = build_spot_oi_data(commodity, mtime)
+    syms = data["syms"]; px_piv = data["px_piv"]
+    if len(syms) < 2 or snapshot_date not in px_piv.index:
+        return None
+    px_row = px_piv.loc[snapshot_date]
+    root_len = len(commodity)
+    pairs, spreads = [], []
+    for i in range(len(syms) - 1):
+        s1, s2 = syms[i], syms[i + 1]
+        p1, p2 = px_row.get(s1), px_row.get(s2)
+        if pd.isna(p1) or pd.isna(p2):
+            continue
+        pairs.append(f"{s1}-{s2[root_len:]}")
+        spreads.append(p1 - p2)
+    if not pairs:
+        return None
+    colors = ["#16a34a" if s >= 0 else "#dc2626" for s in spreads]
+
+    fig = go.Figure(go.Bar(x=pairs, y=spreads, marker_color=colors,
+                           hovertemplate="%{x}<br>Spread: %{y:+.2f}<extra></extra>"))
+    fig.add_hline(y=0, line_color="#cccccc", line_width=1)
+    fig.update_layout(height=340, plot_bgcolor="#fff", paper_bgcolor="#fff",
+                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      showlegend=False, margin=dict(l=55, r=25, t=30, b=40),
+                      yaxis=dict(title="Spread", gridcolor="rgba(0,0,0,.07)"),
+                      title=dict(text=f"Curve Spreads — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')}",
+                                 font=dict(size=12), x=0.01))
+    return fig
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice: str, mtime: float = 0.0):
+    """OI change vs price change, one point per day — do the days with the
+    biggest OI flow line up with the biggest price moves, or not?"""
+    data = build_spot_oi_data(commodity, mtime)
+    oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    if oi_piv.empty:
+        return None
+    max_date = oi_piv.index.max()
+    cutoff = max_date - pd.Timedelta(days=table_lookback)
+    dates = sorted(d for d in oi_piv.index if d >= cutoff)
+    if not dates:
+        return None
+
+    if contract_choice == "Spot (Most OI)":
+        oi_chg_s = data["spot_oi_chg"].reindex(dates)
+        px_chg_s = data["price_chg_pct"].reindex(dates)
+        name = "Spot"
+    elif contract_choice in oi_piv.columns:
+        oi_chg_s = oi_piv[contract_choice].diff().reindex(dates)
+        px_chg_s = (px_piv[contract_choice].pct_change() * 100).reindex(dates)
+        name = contract_choice
+    else:
+        return None
+
+    valid = oi_chg_s.notna() & px_chg_s.notna()
+    if not valid.any():
+        return None
+    dates_v = [d for d, ok in zip(dates, valid) if ok]
+
+    fig = go.Figure(go.Scatter(
+        x=px_chg_s[valid].values, y=oi_chg_s[valid].values, mode="markers",
+        marker=dict(size=7, color="#1a56db", opacity=0.65, line=dict(width=0.5, color="#fff")),
+        text=[d.strftime("%d %b %Y") for d in dates_v],
+        hovertemplate="%{text}<br>Price Chg: %{x:+.2f}%<br>OI Chg: %{y:+,.0f}<extra></extra>",
+    ))
+    fig.add_hline(y=0, line_color="#e5e7eb", line_width=1)
+    fig.add_vline(x=0, line_color="#e5e7eb", line_width=1)
+    fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
+                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      showlegend=False, margin=dict(l=55, r=25, t=30, b=40),
+                      xaxis=dict(title="Price Change (%)", gridcolor="rgba(0,0,0,.07)"),
+                      yaxis=dict(title=f"{name} OI Change (lots)", gridcolor="rgba(0,0,0,.07)"))
+    return fig
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## Settings")
@@ -1566,10 +1677,12 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
     leg1_idx = syms_spot.index(latest_spot_sym) if latest_spot_sym in syms_spot else 0
     leg2_idx = min(leg1_idx + 1, len(syms_spot) - 1)
 
+    all_dates = list(spot_data["oi_piv"].index)
+
     _spot_controls_css("charts_controls")
     with st.expander("Controls", expanded=False):
         with st.container(key="charts_controls"):
-            c0, c1, c2, c3 = st.columns(4)
+            c0, c1, c2, c3, c4 = st.columns(5)
             with c0:
                 chart_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
                                                  value=90, step=10, key="charts_table_lookback")
@@ -1582,10 +1695,32 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
                 leg1 = st.selectbox("Spread Leg 1", syms_spot, index=leg1_idx, key="charts_spread_leg1")
             with c3:
                 leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="charts_spread_leg2")
+            with c4:
+                snapshot_date = st.select_slider(
+                    "Snapshot Date", options=all_dates, value=all_dates[-1] if all_dates else None,
+                    format_func=lambda d: pd.Timestamp(d).strftime("%d %b %Y"), key="charts_snapshot_date",
+                    help="Which date the Term Structure and Curve Spread charts below show.",
+                )
 
     fig_oi_spread = build_oi_spread_chart(commodity, chart_lookback, oi_choice, leg1, leg2, mt)
     if fig_oi_spread is not None:
         st.plotly_chart(fig_oi_spread, use_container_width=True)
+
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        fig_term = build_term_structure_chart(commodity, snapshot_date, mt)
+        if fig_term is not None:
+            st.plotly_chart(fig_term, use_container_width=True)
+    with cc2:
+        fig_curve_spread = build_curve_spread_chart(commodity, snapshot_date, mt)
+        if fig_curve_spread is not None:
+            st.plotly_chart(fig_curve_spread, use_container_width=True)
+
+    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
+               "OI Change vs Price Change</div>", unsafe_allow_html=True)
+    fig_scatter = build_oi_price_scatter(commodity, chart_lookback, oi_choice, mt)
+    if fig_scatter is not None:
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
 
 with tab_spot:
