@@ -957,33 +957,44 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
 @st.cache_data(max_entries=50, show_spinner=False)
 def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
     """Every adjacent-month spread across the whole active curve, for one
-    date — where the curve is steepest/most inverted, at a glance (vs. the
-    OI-vs-Spread chart's single user-picked pair)."""
+    date, plus each pair's min OI (liquidity) as light-grey bars — where the
+    curve is steepest/most inverted AND how liquid that leg is, at a glance
+    (vs. the OI-vs-Spread chart's single user-picked pair)."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; px_piv = data["px_piv"]
+    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
     if len(syms) < 2 or snapshot_date not in px_piv.index:
         return None
     px_row = px_piv.loc[snapshot_date]
+    oi_row = oi_piv.loc[snapshot_date]
     root_len = len(commodity)
-    pairs, spreads = [], []
+    pairs, spreads, min_ois = [], [], []
     for i in range(len(syms) - 1):
         s1, s2 = syms[i], syms[i + 1]
         p1, p2 = px_row.get(s1), px_row.get(s2)
         if pd.isna(p1) or pd.isna(p2):
             continue
+        o1, o2 = oi_row.get(s1, 0), oi_row.get(s2, 0)
         pairs.append(f"{s1}-{s2[root_len:]}")
         spreads.append(p1 - p2)
+        min_ois.append(min(o1, o2))
     if not pairs:
         return None
-    colors = ["#16a34a" if s >= 0 else "#dc2626" for s in spreads]
+    marker_colors = ["#16a34a" if s >= 0 else "#dc2626" for s in spreads]
 
-    fig = go.Figure(go.Bar(x=pairs, y=spreads, marker_color=colors,
-                           hovertemplate="%{x}<br>Spread: %{y:+.2f}<extra></extra>"))
-    fig.add_hline(y=0, line_color="#cccccc", line_width=1)
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=pairs, y=min_ois, name="Min OI", marker_color="rgba(156,163,175,.55)",
+                         hovertemplate="%{x}<br>Min OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
+    fig.add_trace(go.Scatter(x=pairs, y=spreads, name="Spread", mode="lines+markers",
+                             line=dict(color="#374151", width=2),
+                             marker=dict(size=8, color=marker_colors),
+                             hovertemplate="%{x}<br>Spread: %{y:+.2f}<extra></extra>"), secondary_y=True)
+    fig.add_hline(y=0, line_color="#cccccc", line_width=1, secondary_y=True)
     fig.update_layout(height=340, plot_bgcolor="#fff", paper_bgcolor="#fff",
                       font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
-                      showlegend=False, margin=dict(l=55, r=25, t=20, b=40),
-                      yaxis=dict(title="Spread", gridcolor="rgba(0,0,0,.07)"))
+                      legend=dict(orientation="h", y=1.12, x=0),
+                      margin=dict(l=55, r=55, t=30, b=40))
+    fig.update_yaxes(title_text="Min OI", secondary_y=False, gridcolor="rgba(0,0,0,.07)")
+    fig.update_yaxes(title_text="Spread", secondary_y=True, showgrid=False)
     return fig
 
 
@@ -1861,7 +1872,8 @@ def _render_spreads_tab(commodity: str, mt: float):
             st.plotly_chart(fig_term, use_container_width=True)
     with cc2:
         st.markdown("<div style='font-size:.78rem;font-weight:600;color:#1a1a1a;margin-bottom:4px'>"
-                   "Curve Spreads (adjacent months)</div>", unsafe_allow_html=True)
+                   f"Curve Spreads (adjacent months) — New Date: "
+                   f"{pd.Timestamp(snapshot_date).strftime('%d %b %Y')}</div>", unsafe_allow_html=True)
         fig_curve_spread = build_curve_spread_chart(commodity, snapshot_date, mt)
         if fig_curve_spread is not None:
             st.plotly_chart(fig_curve_spread, use_container_width=True)
