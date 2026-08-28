@@ -1017,16 +1017,22 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
     return fig
 
 
+def _fmt_compact(v) -> str:
+    if pd.isna(v):
+        return ""
+    v = float(v)
+    return f"{v/1000:.1f}k" if abs(v) >= 1000 else f"{v:,.0f}"
+
+
 @st.cache_data(max_entries=50, show_spinner=False)
-def build_spread_matrix_html(commodity: str, snapshot_date, view: str, mtime: float = 0.0):
-    """Full N x N matrix of every possible calendar-spread combination
-    (row month minus column month), for one date — not just adjacent
-    pairs. Two views on the same grid:
-      'Price Spread'      — the spread itself, diverging red/green.
-      'Min OI (Liquidity)'— min(OI of the two legs), a proxy for how much
-        size that specific combination could actually trade at (a wide
-        spread between two thin deferred months isn't very tradeable;
-        this flags that directly instead of leaving it to be inferred)."""
+def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
+    """Full N x N matrix of every possible calendar-spread combination (row
+    month minus column month), for one date — not just adjacent pairs.
+    Each cell shows both signals together: the spread itself (bold,
+    colored by sign) and, as small subtext, min(OI of the two legs) — a
+    spread is only as tradeable as its thinner leg, so this puts the
+    liquidity check right next to the number it qualifies, instead of a
+    separate toggled-away view."""
     data = build_spot_oi_data(commodity, mtime)
     syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
     if len(syms) < 2 or snapshot_date not in px_piv.index:
@@ -1037,65 +1043,39 @@ def build_spread_matrix_html(commodity: str, snapshot_date, view: str, mtime: fl
     css = """<style>
       .sprmat-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px}
       table.sprmat{border-collapse:collapse;width:100%;font-size:.68rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.sprmat th,table.sprmat td{padding:4px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
+      table.sprmat th,table.sprmat td{padding:3px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
       table.sprmat th{background:#fafafa;color:#1a1a1a;font-weight:600;font-size:.62rem;
         text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
       table.sprmat td.row-hdr{background:#fafafa;font-weight:600;text-align:left}
       table.sprmat td.blank{background:#fbfbfc}
+      table.sprmat .spr-val{font-weight:600;line-height:1.2}
+      table.sprmat .spr-oi{font-size:.6rem;font-weight:400;color:#9ca3af;line-height:1.2}
     </style>"""
 
     # Upper triangle only (row = earlier month, col = later month, since syms
     # is LTD-ascending) — each pair shown once as "earlier minus later", same
-    # convention as the adjacent Curve Spread chart. The full matrix (every
-    # pair twice, sign-flipped) was hard to read and doubled the clutter for
-    # no extra information.
+    # convention as the adjacent Curve Spread chart.
     n = len(syms)
     header = "<tr><th></th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
     rows = []
-
-    if view == "Price Spread":
-        vals = {}
-        for i in range(n):
-            for j in range(i + 1, n):
-                r, c = syms[i], syms[j]
-                if pd.isna(px_row.get(r)) or pd.isna(px_row.get(c)):
-                    continue
-                vals[(r, c)] = px_row[r] - px_row[c]
-        vmax = max((abs(v) for v in vals.values()), default=1.0) or 1.0
-        for i, r in enumerate(syms):
-            cells = f"<td class='row-hdr'>{r}</td>"
-            for j, c in enumerate(syms):
-                if j <= i:
-                    cells += "<td class='blank'></td>"
-                    continue
-                v = vals.get((r, c))
-                if v is None:
-                    cells += "<td></td>"
-                else:
-                    cells += (f"<td style='{_flat_tint(v)};color:{_sign_color(v)};font-weight:600'>"
-                              f"{v:+.2f}</td>")
-            rows.append(f"<tr>{cells}</tr>")
-    else:  # Min OI (Liquidity)
-        vals = {}
-        for i in range(n):
-            for j in range(i + 1, n):
-                r, c = syms[i], syms[j]
-                if pd.isna(oi_row.get(r)) or pd.isna(oi_row.get(c)):
-                    continue
-                vals[(r, c)] = min(oi_row[r], oi_row[c])
-        vmax = max(vals.values(), default=1.0) or 1.0
-        for i, r in enumerate(syms):
-            cells = f"<td class='row-hdr'>{r}</td>"
-            for j, c in enumerate(syms):
-                if j <= i:
-                    cells += "<td class='blank'></td>"
-                    continue
-                v = vals.get((r, c))
-                if v is None:
-                    cells += "<td></td>"
-                else:
-                    cells += f"<td style='{_bar_style(v, vmax, 'rgba(10,36,99,.16)')}'>{v:,.0f}</td>"
-            rows.append(f"<tr>{cells}</tr>")
+    for i, r in enumerate(syms):
+        cells = f"<td class='row-hdr'>{r}</td>"
+        for j, c in enumerate(syms):
+            if j <= i:
+                cells += "<td class='blank'></td>"
+                continue
+            p1, p2 = px_row.get(r), px_row.get(c)
+            o1, o2 = oi_row.get(r), oi_row.get(c)
+            if pd.isna(p1) or pd.isna(p2):
+                cells += "<td></td>"
+                continue
+            spread = p1 - p2
+            min_oi = min(o1, o2) if pd.notna(o1) and pd.notna(o2) else None
+            oi_txt = f"<div class='spr-oi'>{_fmt_compact(min_oi)} OI</div>" if min_oi is not None else ""
+            cells += (f"<td style='{_flat_tint(spread)}'>"
+                      f"<div class='spr-val' style='color:{_sign_color(spread)}'>{spread:+.2f}</div>"
+                      f"{oi_txt}</td>")
+        rows.append(f"<tr>{cells}</tr>")
 
     return f"{css}<div class='sprmat-wrap'><table class='sprmat'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
 
@@ -1804,13 +1784,9 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
                "Spread Matrix (row minus column)</div>", unsafe_allow_html=True)
     st.caption("Each pair shown once — row's contract is the earlier month, so a cell is "
               "\"row price minus column price\" for that combination, e.g. the CCZ6 row / "
-              "CCH7 column cell is CCZ6 - CCH7.")
-    matrix_view = st.radio("View", ["Price Spread", "Min OI (Liquidity)"], horizontal=True,
-                           key="charts_matrix_view",
-                           help="Price Spread: row month's price minus column month's price. "
-                                "Min OI (Liquidity): the smaller of the two legs' OI — a spread's "
-                                "thinner leg caps how much size it can actually trade at.")
-    html_matrix = build_spread_matrix_html(commodity, snapshot_date, matrix_view, mt)
+              "CCH7 column cell is CCZ6 - CCH7. The small grey number is the smaller of the "
+              "two legs' OI — a spread is only as tradeable as its thinner leg.")
+    html_matrix = build_spread_matrix_html(commodity, snapshot_date, mt)
     if html_matrix is None:
         st.info("No data for this date.")
     else:
