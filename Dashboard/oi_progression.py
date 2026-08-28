@@ -907,27 +907,47 @@ def build_oi_spread_chart(commodity: str, table_lookback: int, oi_choice: str, l
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
-def build_term_structure_chart(commodity: str, snapshot_date, mtime: float = 0.0):
+def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, mtime: float = 0.0):
     """Term structure snapshot for one date: OI per contract as grey bars
     (left axis), price per contract as a line (right axis) — the curve
-    shape (contango/backwardation) and where OI sits along it, at a glance."""
+    shape (contango/backwardation) and where OI sits along it, at a glance.
+    An optional second, older date overlays as a lighter bar + dashed line,
+    so the curve's shape today can be compared against how it looked then."""
     data = build_spot_oi_data(commodity, mtime)
     syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
     if not syms or snapshot_date not in oi_piv.index:
         return None
     oi_row = oi_piv.loc[snapshot_date]
     px_row = px_piv.loc[snapshot_date]
+    d_label = pd.Timestamp(snapshot_date).strftime("%d %b")
+
+    have_older = older_date is not None and older_date in oi_piv.index and older_date != snapshot_date
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Bar(x=syms, y=oi_row.reindex(syms).values, name="OI",
+    fig.add_trace(go.Bar(x=syms, y=oi_row.reindex(syms).values, name=f"OI ({d_label})",
                          marker_color="rgba(120,120,120,.55)",
                          hovertemplate="%{x}<br>OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
-    fig.add_trace(go.Scatter(x=syms, y=px_row.reindex(syms).values, name="Price", mode="lines+markers",
+    if have_older:
+        oi_row_old = oi_piv.loc[older_date]
+        old_label = pd.Timestamp(older_date).strftime("%d %b")
+        fig.add_trace(go.Bar(x=syms, y=oi_row_old.reindex(syms).values, name=f"OI ({old_label})",
+                             marker_color="rgba(120,120,120,.22)",
+                             hovertemplate="%{x}<br>OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
+        fig.update_layout(barmode="group")
+
+    fig.add_trace(go.Scatter(x=syms, y=px_row.reindex(syms).values, name=f"Price ({d_label})", mode="lines+markers",
                              line=dict(color="#1a56db", width=2), marker=dict(size=7),
                              hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
+    if have_older:
+        px_row_old = px_piv.loc[older_date]
+        fig.add_trace(go.Scatter(x=syms, y=px_row_old.reindex(syms).values, name=f"Price ({old_label})",
+                                 mode="lines+markers", line=dict(color="#f59e0b", width=2, dash="dash"),
+                                 marker=dict(size=6),
+                                 hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
+
     fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
                       font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
-                      legend=dict(orientation="h", y=1.08, x=0),
+                      legend=dict(orientation="h", y=1.1, x=0),
                       margin=dict(l=55, r=55, t=30, b=40))
     fig.update_yaxes(title_text="Open Interest", secondary_y=False, gridcolor="rgba(0,0,0,.07)")
     fig.update_yaxes(title_text="Price", secondary_y=True, showgrid=False)
@@ -1813,16 +1833,25 @@ def _render_spreads_tab(commodity: str, mt: float):
 
     all_dates = list(spot_data["oi_piv"].index)
     min_d, max_d = pd.Timestamp(all_dates[0]).date(), pd.Timestamp(all_dates[-1]).date()
-    picked_date = st.date_input("Snapshot Date", value=max_d, min_value=min_d, max_value=max_d,
-                                key="spreads_snapshot_date")
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        picked_date = st.date_input("Snapshot Date", value=max_d, min_value=min_d, max_value=max_d,
+                                    key="spreads_snapshot_date")
     snapshot_date = min(all_dates, key=lambda d: abs((d - pd.Timestamp(picked_date)).days))
+    with dc2:
+        default_older = pd.Timestamp(snapshot_date) - pd.Timedelta(days=7)
+        default_older_d = max(min_d, default_older.date())
+        older_picked = st.date_input("Older Date (for Term Structure)", value=default_older_d,
+                                     min_value=min_d, max_value=max_d, key="spreads_older_date")
+    older_date = min(all_dates, key=lambda d: abs((d - pd.Timestamp(older_picked)).days))
 
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
-               f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')}</div>",
+               f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')} vs "
+               f"{pd.Timestamp(older_date).strftime('%d %b %Y')}</div>",
                unsafe_allow_html=True)
     cc1, cc2 = st.columns(2)
     with cc1:
-        fig_term = build_term_structure_chart(commodity, snapshot_date, mt)
+        fig_term = build_term_structure_chart(commodity, snapshot_date, older_date, mt)
         if fig_term is not None:
             st.plotly_chart(fig_term, use_container_width=True)
     with cc2:
