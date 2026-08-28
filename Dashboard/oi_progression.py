@@ -1041,50 +1041,54 @@ def build_spread_matrix_html(commodity: str, snapshot_date, view: str, mtime: fl
       table.sprmat th{background:#fafafa;color:#1a1a1a;font-weight:600;font-size:.62rem;
         text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
       table.sprmat td.row-hdr{background:#fafafa;font-weight:600;text-align:left}
-      table.sprmat td.diag{background:#f4f4f5;color:#cbd5e1}
+      table.sprmat td.blank{background:#fbfbfc}
     </style>"""
 
+    # Upper triangle only (row = earlier month, col = later month, since syms
+    # is LTD-ascending) — each pair shown once as "earlier minus later", same
+    # convention as the adjacent Curve Spread chart. The full matrix (every
+    # pair twice, sign-flipped) was hard to read and doubled the clutter for
+    # no extra information.
+    n = len(syms)
     header = "<tr><th></th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
     rows = []
+
     if view == "Price Spread":
-        vmax = 0.0
         vals = {}
-        for r in syms:
-            for c in syms:
-                if r == c or pd.isna(px_row.get(r)) or pd.isna(px_row.get(c)):
+        for i in range(n):
+            for j in range(i + 1, n):
+                r, c = syms[i], syms[j]
+                if pd.isna(px_row.get(r)) or pd.isna(px_row.get(c)):
                     continue
-                v = px_row[r] - px_row[c]
-                vals[(r, c)] = v
-                vmax = max(vmax, abs(v))
-        vmax = vmax or 1.0
-        for r in syms:
+                vals[(r, c)] = px_row[r] - px_row[c]
+        vmax = max((abs(v) for v in vals.values()), default=1.0) or 1.0
+        for i, r in enumerate(syms):
             cells = f"<td class='row-hdr'>{r}</td>"
-            for c in syms:
-                if r == c:
-                    cells += "<td class='diag'>—</td>"
+            for j, c in enumerate(syms):
+                if j <= i:
+                    cells += "<td class='blank'></td>"
                     continue
                 v = vals.get((r, c))
                 if v is None:
                     cells += "<td></td>"
                 else:
-                    cells += (f"<td style='{_oi_chg_style(v, vmax)}'>{v:+.2f}</td>")
+                    cells += (f"<td style='{_flat_tint(v)};color:{_sign_color(v)};font-weight:600'>"
+                              f"{v:+.2f}</td>")
             rows.append(f"<tr>{cells}</tr>")
     else:  # Min OI (Liquidity)
-        vmax = 0.0
         vals = {}
-        for r in syms:
-            for c in syms:
-                if r == c or pd.isna(oi_row.get(r)) or pd.isna(oi_row.get(c)):
+        for i in range(n):
+            for j in range(i + 1, n):
+                r, c = syms[i], syms[j]
+                if pd.isna(oi_row.get(r)) or pd.isna(oi_row.get(c)):
                     continue
-                v = min(oi_row[r], oi_row[c])
-                vals[(r, c)] = v
-                vmax = max(vmax, v)
-        vmax = vmax or 1.0
-        for r in syms:
+                vals[(r, c)] = min(oi_row[r], oi_row[c])
+        vmax = max(vals.values(), default=1.0) or 1.0
+        for i, r in enumerate(syms):
             cells = f"<td class='row-hdr'>{r}</td>"
-            for c in syms:
-                if r == c:
-                    cells += "<td class='diag'>—</td>"
+            for j, c in enumerate(syms):
+                if j <= i:
+                    cells += "<td class='blank'></td>"
                     continue
                 v = vals.get((r, c))
                 if v is None:
@@ -1798,6 +1802,9 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
     # ── Spread Matrix — every pair, not just adjacent ────────────────────────
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
                "Spread Matrix (row minus column)</div>", unsafe_allow_html=True)
+    st.caption("Each pair shown once — row's contract is the earlier month, so a cell is "
+              "\"row price minus column price\" for that combination, e.g. the CCZ6 row / "
+              "CCH7 column cell is CCZ6 - CCH7.")
     matrix_view = st.radio("View", ["Price Spread", "Min OI (Liquidity)"], horizontal=True,
                            key="charts_matrix_view",
                            help="Price Spread: row month's price minus column month's price. "
