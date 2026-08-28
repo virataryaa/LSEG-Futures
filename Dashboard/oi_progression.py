@@ -1699,27 +1699,13 @@ with tab_grid:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — SPOT OI REPORT (spot vs non-spot OI, COT-Tuesday-aligned snapshots)
 # ═══════════════════════════════════════════════════════════════════════════════
-def _calendar_plus_slider_date(label: str, all_dates: list, min_d, max_d, default_d, key_prefix: str):
-    """A calendar (st.date_input) for a quick approximate jump, paired with
-    a select_slider over the REAL available dates as the actual source of
-    truth. st.date_input alone was observed going stale — the widget shows
-    a newly typed/clicked date but the value used elsewhere in the script
-    lagged by one interaction (a date_input commit-timing quirk). The
-    slider always resolves to one of `all_dates` and commits immediately
-    on click/drag, so whatever it returns is guaranteed to match what's
-    displayed. The calendar only nudges the slider to the nearest real
-    date when it changes; the slider remains independently draggable."""
-    cal_key, slider_key, tracker_key = f"{key_prefix}_cal", f"{key_prefix}_slider", f"_{key_prefix}_cal_last"
-    if slider_key not in st.session_state:
-        st.session_state[slider_key] = min(all_dates, key=lambda d: abs((d - pd.Timestamp(default_d)).days))
-
-    picked_cal = st.date_input(f"{label} (jump to)", value=default_d, min_value=min_d, max_value=max_d, key=cal_key)
-    if st.session_state.get(tracker_key) != picked_cal:
-        st.session_state[slider_key] = min(all_dates, key=lambda d: abs((d - pd.Timestamp(picked_cal)).days))
-        st.session_state[tracker_key] = picked_cal
-
-    return st.select_slider(label, options=all_dates,
-                            format_func=lambda d: pd.Timestamp(d).strftime("%d %b %Y"), key=slider_key)
+def _calendar_date(label: str, all_dates: list, min_d, max_d, default_d, key_prefix: str):
+    """Plain calendar widget, snapped to the nearest REAL available date.
+    Uses only the value st.date_input returns THIS run — no session_state
+    indirection, no secondary widget — so there is nothing in this
+    function's own logic that can lag behind what the calendar displays."""
+    picked = st.date_input(label, value=default_d, min_value=min_d, max_value=max_d, key=f"{key_prefix}_cal")
+    return min(all_dates, key=lambda d: abs((d - pd.Timestamp(picked)).days))
 
 
 def _spot_controls_css(container_key: str):
@@ -1860,9 +1846,9 @@ def _render_spreads_tab(commodity: str, mt: float):
 
     dc1, dc2 = st.columns(2)
     with dc1:
-        snapshot_date = _calendar_plus_slider_date("Snapshot Date", all_dates, min_d, max_d, max_d, "spreads_snapshot")
+        snapshot_date = _calendar_date("Snapshot Date", all_dates, min_d, max_d, max_d, "spreads_snapshot")
     with dc2:
-        older_date = _calendar_plus_slider_date("Older Date", all_dates, min_d, max_d, default_older_d, "spreads_older")
+        older_date = _calendar_date("Older Date", all_dates, min_d, max_d, default_older_d, "spreads_older")
 
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
                f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')} vs "
