@@ -589,6 +589,20 @@ def _sign_color(v) -> str:
     return "#16a34a" if v > 0 else "#dc2626"
 
 
+def _liquidity_color(v, vmax) -> str:
+    """Red (thin) -> amber (mid) -> green (deep), scaled by v/vmax — a
+    3-stop traffic-light read for a magnitude-only value (OI), using the
+    same red/amber/green already used for sign elsewhere in this file."""
+    if pd.isna(v) or not vmax:
+        return "#9ca3af"
+    t = min(abs(float(v)) / vmax, 1.0)
+    stops = [(220, 38, 38), (217, 119, 6), (22, 163, 74)]  # red, amber, green
+    seg, t2 = (0, t / 0.5) if t < 0.5 else (1, (t - 0.5) / 0.5)
+    (r0, g0, b0), (r1, g1, b1) = stops[seg], stops[seg + 1]
+    r, g, b = (round(r0 + t2 * (r1 - r0)), round(g0 + t2 * (g1 - g0)), round(b0 + t2 * (b1 - b0)))
+    return f"rgb({r},{g},{b})"
+
+
 def _spot_series(oi_piv: pd.DataFrame, px_piv: pd.DataFrame):
     """For every date, find whichever contract has the highest OI (the
     'spot'/most-active month) and pull its OI and settlement price — the
@@ -1017,13 +1031,6 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
     return fig
 
 
-def _fmt_compact(v) -> str:
-    if pd.isna(v):
-        return ""
-    v = float(v)
-    return f"{v/1000:.1f}k" if abs(v) >= 1000 else f"{v:,.0f}"
-
-
 @st.cache_data(max_entries=50, show_spinner=False)
 def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
     """Full N x N matrix of every possible calendar-spread combination (row
@@ -1049,13 +1056,26 @@ def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
       table.sprmat td.row-hdr{background:#fafafa;font-weight:600;text-align:left}
       table.sprmat td.blank{background:#fbfbfc}
       table.sprmat .spr-val{font-weight:600;line-height:1.2}
-      table.sprmat .spr-oi{font-size:.6rem;font-weight:400;color:#9ca3af;line-height:1.2}
+      table.sprmat .spr-oi{font-size:.6rem;font-weight:600;line-height:1.2}
     </style>"""
 
     # Upper triangle only (row = earlier month, col = later month, since syms
     # is LTD-ascending) — each pair shown once as "earlier minus later", same
     # convention as the adjacent Curve Spread chart.
     n = len(syms)
+    pairs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            r, c = syms[i], syms[j]
+            p1, p2 = px_row.get(r), px_row.get(c)
+            if pd.isna(p1) or pd.isna(p2):
+                continue
+            o1, o2 = oi_row.get(r), oi_row.get(c)
+            min_oi = min(o1, o2) if pd.notna(o1) and pd.notna(o2) else None
+            pairs.append((i, j, p1 - p2, min_oi))
+    oi_vmax = max((p[3] for p in pairs if p[3] is not None), default=1.0) or 1.0
+    by_ij = {(i, j): (spread, min_oi) for i, j, spread, min_oi in pairs}
+
     header = "<tr><th></th>" + "".join(f"<th>{s}</th>" for s in syms) + "</tr>"
     rows = []
     for i, r in enumerate(syms):
@@ -1064,14 +1084,13 @@ def build_spread_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
             if j <= i:
                 cells += "<td class='blank'></td>"
                 continue
-            p1, p2 = px_row.get(r), px_row.get(c)
-            o1, o2 = oi_row.get(r), oi_row.get(c)
-            if pd.isna(p1) or pd.isna(p2):
+            cell = by_ij.get((i, j))
+            if cell is None:
                 cells += "<td></td>"
                 continue
-            spread = p1 - p2
-            min_oi = min(o1, o2) if pd.notna(o1) and pd.notna(o2) else None
-            oi_txt = f"<div class='spr-oi'>{_fmt_compact(min_oi)} OI</div>" if min_oi is not None else ""
+            spread, min_oi = cell
+            oi_txt = (f"<div class='spr-oi' style='color:{_liquidity_color(min_oi, oi_vmax)}'>"
+                      f"{_fmt_num(min_oi)}</div>") if min_oi is not None else ""
             cells += (f"<td style='{_flat_tint(spread)}'>"
                       f"<div class='spr-val' style='color:{_sign_color(spread)}'>{spread:+.2f}</div>"
                       f"{oi_txt}</td>")
