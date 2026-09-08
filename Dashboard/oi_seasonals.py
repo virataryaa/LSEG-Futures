@@ -153,9 +153,12 @@ def crop_label(basket: dict, crop_year: int) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("### Deferred OI Seasonals")
-st.caption("Total open interest across a basket of contracts, aligned on days to the "
-           "basket's back-leg expiry — one line per crop year.")
+st.markdown("""<style>
+[data-testid="stMetricLabel"] { font-size:0.70rem !important; color:#888; }
+[data-testid="stMetricValue"] { font-size:1.05rem !important; font-weight:600; }
+section[data-testid="stSidebar"] h3 { font-size:0.82rem; font-weight:600;
+    color:#6b7280; letter-spacing:.02em; margin:0 0 .3rem; }
+</style>""", unsafe_allow_html=True)
 
 MTIMES = {c: _mtime(c) for c in COMMODITIES}
 
@@ -166,31 +169,28 @@ def _months_traded(commodity: str, mtime: float) -> list:
     return sorted(df["month"].unique(), key=lambda m: MONTH_ORDER[m])
 
 
-with st.expander("Basket", expanded=True):
+# ── Sidebar: basket ───────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### Basket")
     preset_name = st.selectbox("Preset", list(PRESETS) + ["Custom"], index=0,
-                               key="seas_preset")
+                               key="seas_preset", label_visibility="collapsed")
     if preset_name == "Custom":
         markets = st.multiselect(
             "Markets", list(COMMODITIES), default=["KC", "RC"], key="seas_markets",
-            help="Months are picked per market below, so the legs do not have to match "
-                 "across markets — KC Z+H can be combined with RC X+F in one basket.")
+            help="Months are picked per market below, so the legs need not match "
+                 "across markets — KC Z+H can sit with RC X+F in one basket.")
         basket = {}
-        if markets:
-            cols = st.columns(len(markets))
-            for col, mk in zip(cols, markets):
-                with col:
-                    opts = _months_traded(mk, MTIMES[mk])
-                    picked = st.multiselect(
-                        f"{mk} months", opts, default=[], key=f"seas_months_{mk}",
-                        format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
-                    if picked:
-                        basket[mk] = picked
+        for mk in markets:
+            picked = st.multiselect(f"{mk} months", _months_traded(mk, MTIMES[mk]),
+                                    default=[], key=f"seas_months_{mk}",
+                                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
+            if picked:
+                basket[mk] = picked
     else:
         basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
-        st.caption("  ·  ".join(f"**{k}** {'+'.join(v)}" for k, v in basket.items()))
 
 if not basket:
-    st.info("Pick at least one market and one delivery month.")
+    st.info("Pick a market and at least one month in the sidebar.")
     st.stop()
 
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
@@ -211,54 +211,43 @@ if not built:
 labels_all = list(built)
 complete   = [l for l in labels_all if meta[l]["complete"]]
 
-# "Current" is the season being traded now — the one whose front leg expires
-# next — not simply the newest one built. A crop year two seasons out is
-# listed and technically incomplete, but carries a few thousand lots and is
-# not what the desk means by the live season.
+# "Current" is the season trading now — the one whose front leg expires next —
+# not simply the newest built. A crop year two seasons out is listed and
+# technically incomplete, but carries a few thousand lots.
 incomplete = [l for l in labels_all if not meta[l]["complete"]]
 current    = (min(incomplete, key=lambda l: meta[l]["front_ltd"]) if incomplete
               else labels_all[-1])
 
-# The year pickers are keyed to the basket. A keyed widget keeps its value
-# across reruns and only drops entries missing from the new option list — so
-# switching from cocoa (labels like "21/22") to sugar ("27") silently emptied
-# both lists and left the average with nothing in it, rather than falling back
-# to the defaults. A per-basket key makes each basket get its own widget.
+# ── Sidebar: years & display ──────────────────────────────────────────────────
+# Keyed to the basket. A keyed widget keeps its value across reruns and only
+# drops entries missing from the new options — so switching from cocoa (labels
+# like "21/22") to sugar ("27") silently emptied both lists instead of falling
+# back to the defaults. A per-basket key gives each basket its own widget.
 bsig = "_".join(f"{c}{''.join(ms)}" for c, ms in basket_key)
 
-with st.expander("Years & display", expanded=False):
-    c1, c2 = st.columns(2)
-    with c1:
-        default_cmp = [l for l in complete[-MAX_COMPARE:] if l != current]
-        cmp_years = st.multiselect(
-            "Crop years to plot", labels_all, default=default_cmp, key=f"seas_cmp_{bsig}",
-            help=f"The current crop year ({current}) is always drawn. Capped at "
-                 f"{MAX_COMPARE} comparison lines — past that the colours stop being "
-                 f"reliably distinguishable, so read the rest off the band instead.")
-        if len(cmp_years) > MAX_COMPARE:
-            st.warning(f"Showing the first {MAX_COMPARE} of {len(cmp_years)} — deselect "
-                       f"some, or read the rest off the band.")
-            cmp_years = cmp_years[:MAX_COMPARE]
-    with c2:
-        avg_years = st.multiselect(
-            "Years in the average & band", complete, default=complete[-5:],
-            key=f"seas_avg_{bsig}",
-            help="Defaults to the last 5 complete crop years and rolls forward on its "
-                 "own, so it cannot go stale. Incomplete years are excluded — including "
-                 "one would make the average step where its data runs out.")
-        show_band = st.checkbox(
-            "Show percentile band", value=True, key="seas_band",
-            help="25th-75th percentile and min-max envelope across the years above. "
-                 "Individual crop years span a wide range of levels, so the band says "
-                 "considerably more than the mean line alone.")
+with st.sidebar:
+    st.markdown("### Years")
+    default_cmp = [l for l in complete[-MAX_COMPARE:] if l != current]
+    cmp_years = st.multiselect(
+        "Plot", labels_all, default=default_cmp, key=f"seas_cmp_{bsig}",
+        help=f"{current} is always drawn. Capped at {MAX_COMPARE} comparison lines — "
+             f"past that the colours stop being reliably distinguishable, so read the "
+             f"rest off the band.")
+    if len(cmp_years) > MAX_COMPARE:
+        st.warning(f"Showing first {MAX_COMPARE}.")
+        cmp_years = cmp_years[:MAX_COMPARE]
 
-    d1, d2 = st.columns(2)
-    with d1:
-        max_dte = st.slider("Max days to expiry shown", 200, 900, 700, step=25,
-                            key="seas_max_dte")
-    with d2:
-        table_step = st.slider("Table row step (days)", 1, 14, 7, key="seas_step",
-                               help="7 matches the weekly grid of the desk sheet.")
+    avg_years = st.multiselect(
+        "Average & band", complete, default=complete[-5:], key=f"seas_avg_{bsig}",
+        help="Last 5 complete crop years by default, rolling forward on its own so it "
+             "cannot go stale. Incomplete years are excluded — one would make the "
+             "average step where its data runs out.")
+
+    st.markdown("### Display")
+    show_band = st.checkbox("Percentile band", value=True, key="seas_band",
+                            help="25th-75th and min-max across the years above.")
+    max_dte = st.slider("Max days to expiry", 200, 900, 700, step=25, key="seas_max_dte")
+    table_step = st.slider("Table step (days)", 1, 14, 7, key="seas_step")
 
 # ── Common DTE grid, mean and band ────────────────────────────────────────────
 grid    = np.arange(0, max_dte + 1)
@@ -273,91 +262,84 @@ band = pd.DataFrame({
     "hi":   avg_src.max(axis=1, skipna=True),
 }, index=grid).dropna(how="all")
 
-# ── KPIs ──────────────────────────────────────────────────────────────────────
-# DTE counts DOWN as time passes, so the most recent observation is the
-# series' SMALLEST days-to-expiry, not its largest. Read it off the full
-# series rather than the display grid, which max_dte may have truncated.
+# DTE counts DOWN as time passes, so the latest observation is the series'
+# SMALLEST days-to-expiry. Read it off the full series, not the display grid,
+# which max_dte may have truncated.
 cur_full = built[current]
 cur_dte  = int(cur_full.index.min()) if len(cur_full) else None
-if cur_dte is not None:
-    cur_oi = cur_full.loc[cur_dte]
-    ref    = band["mean"].get(cur_dte, np.nan)
-    k = st.columns(5)
-    k[0].metric("Crop year", current)
-    k[1].metric("Basket OI", f"{cur_oi:,.0f}")
-    k[2].metric("Days to back-leg expiry", f"{cur_dte}")
-    k[3].metric("As of", meta[current]["last_date"].strftime("%b %d, %Y"))
-    k[4].metric(f"vs {len(avg_years)}Y mean",
-                "n/a" if pd.isna(ref) else f"{ref:,.0f}",
-                None if pd.isna(ref) else f"{(cur_oi / ref - 1) * 100:+.1f}%")
-
-# ── Chart ─────────────────────────────────────────────────────────────────────
-fig = go.Figure()
-if show_band and not band.empty and avg_years:
-    fig.add_trace(go.Scatter(x=band.index, y=band["hi"], mode="lines", name="Min-Max",
-                             line=dict(width=0), hoverinfo="skip", showlegend=False))
-    fig.add_trace(go.Scatter(x=band.index, y=band["lo"], mode="lines", name="Min-Max",
-                             line=dict(width=0), fill="tonexty", fillcolor=BAND_OUTER,
-                             hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=band.index, y=band["p75"], mode="lines",
-                             name="25th-75th Pct", line=dict(width=0),
-                             hoverinfo="skip", showlegend=False))
-    fig.add_trace(go.Scatter(x=band.index, y=band["p25"], mode="lines",
-                             name="25th-75th Pct", line=dict(width=0), fill="tonexty",
-                             fillcolor=BAND_INNER, hoverinfo="skip"))
-if avg_years:
-    fig.add_trace(go.Scatter(
-        x=band.index, y=band["mean"], mode="lines", name=f"{len(avg_years)}Y Mean",
-        line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
-        hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
-
-for i, lbl in enumerate(cmp_years):
-    if lbl == current:
-        continue
-    fig.add_trace(go.Scatter(
-        x=aligned.index, y=aligned[lbl], mode="lines", name=lbl,
-        line=dict(color=YEAR_COLORS[i % len(YEAR_COLORS)], width=2),
-        hovertemplate="%{y:,.0f}<extra>" + lbl + "</extra>"))
-
-fig.add_trace(go.Scatter(
-    x=aligned.index, y=aligned[current], mode="lines", name=f"{current} (current)",
-    line=dict(color=CURRENT_COLOR, width=3),
-    hovertemplate="%{y:,.0f}<extra>" + current + "</extra>"))
-if cur_dte is not None:
-    fig.add_annotation(x=cur_dte, y=cur_oi, text=f" {current}",
-                       showarrow=False, xanchor="left",
-                       font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
+cur_oi   = cur_full.loc[cur_dte] if cur_dte is not None else np.nan
+ref      = band["mean"].get(cur_dte, np.nan) if cur_dte is not None else np.nan
 
 basket_txt = ", ".join(f"{k} {'+'.join(v)}" for k, v in basket.items())
-fig.update_layout(
-    title=dict(text=f"<b>{basket_txt}</b>  |  Total Futures OI",
-               font=dict(size=15, color=C["font"]), x=0.01),
-    height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
-    font=dict(color=C["font"], family="Inter, sans-serif"),
-    margin=dict(l=70, r=60, t=55, b=70), hovermode="x unified",
-    xaxis=dict(title="Days to back-leg expiry", autorange="reversed",
-               showgrid=True, gridcolor=C["grid"], zeroline=False,
-               tickfont=dict(size=11, color=C["font"])),
-    yaxis=dict(title="Open Interest (contracts)", showgrid=True, gridcolor=C["grid"],
-               zeroline=False, tickformat=",", tickfont=dict(size=11, color=C["font"])),
-    legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
-                bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-)
-st.plotly_chart(fig, use_container_width=True)
+st.markdown(f"### {basket_txt}")
 
-# ── Diagnostics ───────────────────────────────────────────────────────────────
-n_fill = sum(meta[l]["filled"] for l in labels_all)
-st.caption(
-    f"Anchor: the back leg of each crop year — for Z+H that is time to H expiry. Each "
-    f"series stops when its front leg expires. {n_fill:,} leg-days across "
-    f"{len(labels_all)} crop years fell on a date when one exchange was shut and "
-    f"another open, and were carried forward rather than summed as a gap.",
-    help="A raw row-wise sum drops a leg entirely on the other exchange's holidays, "
-         "which halves a NY+LD basket for that date. Each leg is carried forward across "
-         "those closures, only between its own first and last real print.")
+kc, _ = st.columns([1, 5])
+kc.metric("As of", meta[current]["last_date"].strftime("%b %d, %Y"))
 
-# ── Table — also the relief view for the low-contrast line colours ────────────
-with st.expander("Data — days to expiry by crop year", expanded=False):
+tab_chart, tab_data = st.tabs(["Chart", "Data"])
+
+# ── Chart ─────────────────────────────────────────────────────────────────────
+with tab_chart:
+    fig = go.Figure()
+    if show_band and not band.empty and avg_years:
+        fig.add_trace(go.Scatter(x=band.index, y=band["hi"], mode="lines", name="Min-Max",
+                                 line=dict(width=0), hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=band.index, y=band["lo"], mode="lines", name="Min-Max",
+                                 line=dict(width=0), fill="tonexty", fillcolor=BAND_OUTER,
+                                 hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=band.index, y=band["p75"], mode="lines",
+                                 name="25th-75th Pct", line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=band.index, y=band["p25"], mode="lines",
+                                 name="25th-75th Pct", line=dict(width=0), fill="tonexty",
+                                 fillcolor=BAND_INNER, hoverinfo="skip"))
+    if avg_years:
+        fig.add_trace(go.Scatter(
+            x=band.index, y=band["mean"], mode="lines", name=f"{len(avg_years)}Y Mean",
+            line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
+            hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
+
+    for i, lbl in enumerate(cmp_years):
+        if lbl == current:
+            continue
+        fig.add_trace(go.Scatter(
+            x=aligned.index, y=aligned[lbl], mode="lines", name=lbl,
+            line=dict(color=YEAR_COLORS[i % len(YEAR_COLORS)], width=2),
+            hovertemplate="%{y:,.0f}<extra>" + lbl + "</extra>"))
+
+    fig.add_trace(go.Scatter(
+        x=aligned.index, y=aligned[current], mode="lines", name=current,
+        line=dict(color=CURRENT_COLOR, width=3),
+        hovertemplate="%{y:,.0f}<extra>" + current + "</extra>"))
+    if cur_dte is not None:
+        fig.add_annotation(x=cur_dte, y=cur_oi, text=f" {current}", showarrow=False,
+                           xanchor="left",
+                           font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
+
+    fig.update_layout(
+        height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+        font=dict(color=C["font"], family="Inter, sans-serif"),
+        margin=dict(l=70, r=60, t=20, b=70), hovermode="x unified",
+        xaxis=dict(title="Days to back-leg expiry", autorange="reversed",
+                   showgrid=True, gridcolor=C["grid"], zeroline=False,
+                   tickfont=dict(size=11, color=C["font"])),
+        yaxis=dict(title="Open Interest", showgrid=True, gridcolor=C["grid"],
+                   zeroline=False, tickformat=",", tickfont=dict(size=11, color=C["font"])),
+        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    vs = "" if pd.isna(ref) else f"  ·  {(cur_oi / ref - 1) * 100:+.1f}% vs {len(avg_years)}Y mean"
+    st.caption(
+        f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry{vs}",
+        help="Aligned on days to the back leg's expiry — for Z+H that is time to H "
+             "expiry. Each year stops when its front leg expires. Legs are carried "
+             "forward across the other exchange's holidays, and a year ends at the "
+             "last date every one of its legs actually printed.")
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+with tab_data:
     tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
     tbl = aligned[tbl_cols].copy()
     if avg_years:
@@ -365,4 +347,4 @@ with st.expander("Data — days to expiry by crop year", expanded=False):
     tbl = tbl.loc[::-1].iloc[::table_step]
     tbl.index.name = "DTE"
     st.dataframe(tbl.style.format("{:,.0f}", na_rep="—"),
-                 use_container_width=True, height=430)
+                 use_container_width=True, height=620)
