@@ -18,7 +18,8 @@ from datetime import date
 st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
                    layout="wide")
 
-from common import COMMODITIES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data
+from common import (COMMODITIES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data,
+                    _oi_heatmap_style, _oi_chg_style)
 
 # Categorical line colours, fixed order, never cycled. The dashboard's
 # "current" orange is reserved for the live crop year, so comparison years take
@@ -339,12 +340,89 @@ with tab_chart:
              "last date every one of its legs actually printed.")
 
 # ── Data ──────────────────────────────────────────────────────────────────────
+SEAS_TBL_CSS = """
+<style>
+.seas-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
+.seas-tbl { border-collapse:collapse; font-size:10px; font-family:'Inter',sans-serif;
+            white-space:nowrap; width:100%; }
+.seas-tbl th, .seas-tbl td { padding:2px 6px; text-align:right;
+                             border-bottom:1px solid #f0f0f0; }
+.seas-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2;
+               text-align:right; }
+/* box-shadow rather than border-left: border-collapse drops adjacent-cell
+   borders depending on which side wins the merge, box-shadow always shows. */
+.seas-tbl .dte { position:sticky; left:0; background:#fff; text-align:center;
+                 font-weight:600; z-index:1; box-shadow: inset -2px 0 0 0 #374151; }
+.seas-tbl th.dte { background:#fafafa; z-index:3; }
+.seas-tbl .cur { font-weight:700; }
+.seas-tbl .mean { background:#fffbea; font-weight:600; }
+.seas-tbl tbody tr:hover td { background:#f0f9ff !important; }
+.seas-cap { font-size:.72rem; font-weight:600; color:#6b7280; margin:0 0 4px; }
+</style>
+"""
+
+
+def _seas_table_html(frame, style_fn, fmt, cur_label, mean_label):
+    """One HTML table: DTE down the left, one column per crop year.
+
+    `style_fn(value)` returns the inline CSS for a cell — a heatmap tint for
+    levels, a diverging bar for changes — so both tables read with the same
+    conditional formatting as the comprehensive grid."""
+    head = "".join(
+        f'<th class="{"mean" if c == mean_label else ""}">{c}</th>' for c in frame.columns)
+    rows = []
+    for dte, row in frame.iterrows():
+        cells = []
+        for c in frame.columns:
+            v = row[c]
+            cls = "mean" if c == mean_label else ("cur" if c == cur_label else "")
+            if pd.isna(v):
+                cells.append(f'<td class="{cls}">—</td>')
+            else:
+                cells.append(f'<td class="{cls}" style="{style_fn(v)}">{fmt(v)}</td>')
+        rows.append(f'<tr><td class="dte">{int(dte)}</td>{"".join(cells)}</tr>')
+    return (f'<div class="seas-wrap"><table class="seas-tbl">'
+            f'<thead><tr><th class="dte">DTE</th>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
 with tab_data:
     tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
-    tbl = aligned[tbl_cols].copy()
-    if avg_years:
-        tbl[f"{len(avg_years)}Y Mean"] = band["mean"]
-    tbl = tbl.loc[::-1].iloc[::table_step]
-    tbl.index.name = "DTE"
-    st.dataframe(tbl.style.format("{:,.0f}", na_rep="—"),
-                 use_container_width=True, height=620)
+    mean_label = f"{len(avg_years)}Y Mean" if avg_years else None
+
+    # DTE descending, so the table runs earliest -> latest down the page, the
+    # way the desk sheet does.
+    lvl = aligned[tbl_cols].loc[::-1].iloc[::table_step]
+    if mean_label:
+        lvl[mean_label] = band["mean"].loc[::-1].iloc[::table_step]
+
+    # Change between consecutive rows, i.e. over one table step, not one day —
+    # taken after the resampling so it matches what is actually on screen.
+    chg = lvl.diff()
+
+    # Scales are global across the whole table, not per column: these columns
+    # are the same basket in different crop years, so per-column scaling would
+    # normalise away exactly the difference being looked for (23/24 built far
+    # harder than 24/25). Levels tint against the level range, changes bar
+    # against the largest absolute change anywhere in the table.
+    vmin = float(lvl.min().min()) if lvl.notna().any().any() else 0.0
+    vmax = float(lvl.max().max()) if lvl.notna().any().any() else 1.0
+    cmax = float(chg.abs().max().max()) if chg.notna().any().any() else 1.0
+    cmax = cmax if cmax > 0 else 1.0
+
+    st.markdown(SEAS_TBL_CSS, unsafe_allow_html=True)
+    t1, t2 = st.columns(2)
+    with t1:
+        st.markdown('<div class="seas-cap">Open Interest</div>', unsafe_allow_html=True)
+        st.markdown(_seas_table_html(lvl, lambda v: _oi_heatmap_style(v, vmin, vmax),
+                                     lambda v: f"{v:,.0f}", current, mean_label),
+                    unsafe_allow_html=True)
+    with t2:
+        st.markdown(f'<div class="seas-cap">OI Change (per {table_step}d step)</div>',
+                    unsafe_allow_html=True)
+        st.markdown(_seas_table_html(chg, lambda v: _oi_chg_style(v, cmax),
+                                     lambda v: f"{v:+,.0f}", current, mean_label),
+                    unsafe_allow_html=True)
+
+    st.caption(f"Bars scaled to the largest absolute change in the table "
+               f"({cmax:,.0f}); green builds, red liquidates.")

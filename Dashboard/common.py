@@ -93,3 +93,53 @@ def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     df["vol_share_pct"]= df["volume"]        / df["total_vol"] * 100
     df["vol_oi_ratio"] = df["volume"]        / df["open_interest"]
     return df
+
+# -- Conditional-formatting helpers ---------------------------------------
+# Shared so the seasonals tables carry the same bars and tints as the
+# comprehensive grid rather than a second, near-miss implementation.
+
+def _safe(v, default=1.0):
+    v = float(v) if pd.notna(v) else default
+    return v if v > 0 else default
+
+def _oi_heatmap_style(v, vmin, vmax):
+    if pd.isna(v):
+        return ""
+    vmin = float(vmin) if pd.notna(vmin) else 0.0
+    vmax = float(vmax) if pd.notna(vmax) else vmin + 1.0
+    span = vmax - vmin
+    t = min(max((float(v) - vmin) / span, 0.0), 1.0) if span > 0 else 0.0
+    # White -> a medium, still-readable green (not near-black at the top end).
+    r = round(255 + t * (150 - 255))
+    g = round(255 + t * (200 - 255))
+    b = round(255 + t * (165 - 255))
+    return f"background-color:rgb({r},{g},{b});color:#1a1a1a"
+
+def _bar_style(v, vmax, color):
+    if pd.isna(v) or v == 0:
+        return ""
+    pct = min(abs(float(v)) / _safe(vmax), 1.0) * 100
+    return f"background:linear-gradient(to right, {color} {pct:.1f}%, transparent {pct:.1f}%)"
+
+def _diverging_bar_style(v, vmax, pos_color, neg_color):
+    """Bar grows outward from the cell's center: green to the right for
+    positive values, red to the left for negative — instead of both signs
+    growing from the left edge, which made a small negative and a small
+    positive look like they were on different scales."""
+    if pd.isna(v) or v == 0:
+        return ""
+    half_pct = min(abs(float(v)) / _safe(vmax), 1.0) * 50
+    if v >= 0:
+        lo, hi, color = 50.0, 50.0 + half_pct, pos_color
+    else:
+        lo, hi, color = 50.0 - half_pct, 50.0, neg_color
+    return (f"background:linear-gradient(to right, transparent {lo:.1f}%, "
+            f"{color} {lo:.1f}%, {color} {hi:.1f}%, transparent {hi:.1f}%)")
+
+def _oi_chg_style(v, vmax):
+    if pd.isna(v):
+        return ""
+    return _diverging_bar_style(v, vmax, "rgba(22,163,74,0.55)", "rgba(220,38,38,0.55)")
+
+def _vol_style(v, vmax):
+    return _bar_style(v, vmax, "rgba(56,189,248,0.55)")
