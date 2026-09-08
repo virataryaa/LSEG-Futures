@@ -923,25 +923,31 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
 
     have_older = older_date is not None and older_date in oi_piv.index and older_date != snapshot_date
 
+    # One hue per DATE rather than per metric: the new date is blue (bar AND
+    # price line), the older date amber, so a bar and the price line belonging
+    # to the same snapshot are matched at a glance without reading the legend.
+    NEW_LINE, NEW_BAR = "#1e3a8a", "rgba(30,58,138,.42)"
+    OLD_LINE, OLD_BAR = "#f59e0b", "rgba(245,158,11,.38)"
+
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=syms, y=oi_row.reindex(syms).values, name=f"OI ({d_label})",
-                         marker_color="rgba(96,165,250,.65)",
+                         marker_color=NEW_BAR, marker_line=dict(color=NEW_LINE, width=1),
                          hovertemplate="%{x}<br>OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
     if have_older:
         oi_row_old = oi_piv.loc[older_date]
         old_label = pd.Timestamp(older_date).strftime("%d %b")
         fig.add_trace(go.Bar(x=syms, y=oi_row_old.reindex(syms).values, name=f"OI ({old_label})",
-                             marker_color="rgba(120,120,120,.22)",
+                             marker_color=OLD_BAR, marker_line=dict(color=OLD_LINE, width=1),
                              hovertemplate="%{x}<br>OI: %{y:,.0f}<extra></extra>"), secondary_y=False)
         fig.update_layout(barmode="group")
 
     fig.add_trace(go.Scatter(x=syms, y=px_row.reindex(syms).values, name=f"Price ({d_label})", mode="lines+markers",
-                             line=dict(color="#1e3a8a", width=2), marker=dict(size=7),
+                             line=dict(color=NEW_LINE, width=2), marker=dict(size=7),
                              hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
     if have_older:
         px_row_old = px_piv.loc[older_date]
         fig.add_trace(go.Scatter(x=syms, y=px_row_old.reindex(syms).values, name=f"Price ({old_label})",
-                                 mode="lines+markers", line=dict(color="#fdba74", width=2, dash="dash"),
+                                 mode="lines+markers", line=dict(color=OLD_LINE, width=2, dash="dash"),
                                  marker=dict(size=6),
                                  hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
 
@@ -1238,6 +1244,14 @@ with tab_oi:
     ])
 
     hist_df_ind = df_month[df_month["ice_symbol"].isin(hist_syms)].copy() if show_individual else None
+
+    # Normalized panel is computed BEFORE the columns open so that nothing but
+    # the chart itself is emitted inside each column: any caption/info block
+    # rendered above a chart pushes that column's plot down and breaks the
+    # side-by-side vertical alignment. All prose now sits *below* both charts,
+    # one line each, so the two plots start and end at the same height.
+    res_n2 = _normalize_oi_at_dte_max(commodity, selected_month, hist_range, current_contract, mt)
+
     col_raw, col_norm = st.columns(2)
     with col_raw:
         fig_oi = build_chart(
@@ -1251,21 +1265,11 @@ with tab_oi:
             height=520,
         )
         st.plotly_chart(fig_oi, use_container_width=True)
+        st.caption("Contracts outstanding vs history, by days to expiry.")
 
     with col_norm:
-        res_n2 = _normalize_oi_at_dte_max(commodity, selected_month, hist_range, current_contract, mt)
         if res_n2 is not None:
             band_n2, curr_n2, dte_max, current_reached, hist_norm_n2 = res_n2
-            st.caption(
-                f"DTE_max = {dte_max} days to expiry — average, across the selected historical years, "
-                f"of the day each year's OI peaked.",
-                help="DTE_max is the average, across the selected historical years, of the day-to-expiry "
-                     "each year's OI hit its own high; every year's OI curve is then divided by that same "
-                     "year's own OI reading on that DTE_max day (not its own peak) and shown as a %.",
-            )
-            if not current_reached:
-                st.info(f"{current_contract} is still at {dte_now} days to expiry and hasn't "
-                         f"counted down to DTE_max={dte_max} yet, so it has no line here until it does.")
             fig_n2 = build_chart(
                 band_n2, curr_n2, "open_interest", current_contract,
                 title=f"<b>{commodity} {month_name}</b>  |  Normalized (% of OI at DTE_max={dte_max})",
@@ -1277,6 +1281,16 @@ with tab_oi:
                 height=520,
             )
             st.plotly_chart(fig_n2, use_container_width=True)
+            note = f"DTE_max={dte_max}: avg DTE of each year's OI peak."
+            if not current_reached:
+                note += f" {current_contract} at {dte_now} DTE — no line yet."
+            st.caption(
+                note,
+                help="DTE_max is the average, across the selected historical years, of the day-to-expiry "
+                     "each year's OI hit its own high; every year's OI curve is then divided by that same "
+                     "year's own OI reading on that DTE_max day (not its own peak) and shown as a %. "
+                     "The current contract only appears once it has counted down to DTE_max.",
+            )
 
     # ── 2x2 Active contracts ──────────────────────────────────────────────────
     st.markdown("---")
@@ -1606,46 +1620,74 @@ with tab_flow:
         if len(missing_days_f):
             rangebreaks_f.append(dict(values=missing_days_f))
 
-        fig_flow = go.Figure()
-        fig_flow.add_trace(go.Bar(
-            x=flow_win["Date"], y=flow_win["volume"], name="Volume",
-            marker_color="rgba(120,120,120,0.30)", yaxis="y2",
-            hovertemplate="<b>%{x|%b %d, %Y}</b><br>Volume: %{y:,.0f}<extra></extra>",
-        ))
+        # Stacked panels rather than one overlaid axis pair: volume is an order
+        # of magnitude larger than the daily OI change, so overlaying them left
+        # the two bar sets sitting on top of each other and unreadable. Sharing
+        # one x-axis keeps every date column locked between the two panels.
+        fig_flow = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                 vertical_spacing=0.05, row_heights=[0.5, 0.5])
         fig_flow.add_trace(go.Bar(
             x=flow_win["Date"], y=flow_win["oi_change"], name="OI Change",
             marker_color=bar_colors,
-            hovertemplate="<b>%{x|%b %d, %Y}</b><br>OI Change: %{y:+,.0f}<extra></extra>",
-        ))
+            hovertemplate="OI Change: %{y:+,.0f}<extra></extra>",
+        ), row=1, col=1)
+        fig_flow.add_trace(go.Bar(
+            x=flow_win["Date"], y=flow_win["volume"], name="Volume",
+            marker_color="rgba(120,120,120,0.55)",
+            hovertemplate="Volume: %{y:,.0f}<extra></extra>",
+        ), row=2, col=1)
         fig_flow.update_layout(
-            barmode="overlay",
-            title=dict(text=f"<b>{commodity} {month_name}</b>  |  Daily OI Change vs Volume",
+            title=dict(text=f"<b>{commodity} {month_name}</b>  |  Daily OI Change (top) vs Volume (bottom)",
                        font=dict(size=16, color=C["font"]), x=0.01),
-            xaxis=dict(title="Date", showgrid=True, gridcolor=C["grid"],
-                      tickfont=dict(size=11, color=C["font"]), rangebreaks=rangebreaks_f),
-            yaxis=dict(title="OI Change (contracts)", showgrid=True, gridcolor=C["grid"],
-                      zeroline=True, zerolinecolor="rgba(0,0,0,0.25)", zerolinewidth=1,
-                      tickfont=dict(size=11, color=C["font"])),
-            yaxis2=dict(title="Volume (contracts)", overlaying="y", side="right",
-                       showgrid=False, tickfont=dict(size=11, color=C["font"])),
             plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
             font=dict(color=C["font"], family="Inter, sans-serif"),
-            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0,
+            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
                        bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-            hovermode="x unified", height=500, margin=dict(l=70, r=60, t=60, b=90),
+            hovermode="x unified", height=640, margin=dict(l=70, r=30, t=60, b=80),
         )
+        fig_flow.update_xaxes(showgrid=True, gridcolor=C["grid"], rangebreaks=rangebreaks_f,
+                              tickfont=dict(size=11, color=C["font"]))
+        fig_flow.update_xaxes(title_text="Date", row=2, col=1)
+        fig_flow.update_yaxes(title_text="OI Change (contracts)", showgrid=True, gridcolor=C["grid"],
+                              zeroline=True, zerolinecolor="rgba(0,0,0,0.25)", zerolinewidth=1,
+                              tickfont=dict(size=11, color=C["font"]), row=1, col=1)
+        fig_flow.update_yaxes(title_text="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
+                              tickfont=dict(size=11, color=C["font"]), row=2, col=1)
         st.plotly_chart(fig_flow, use_container_width=True)
 
-        # ── Scatter: Volume vs OI Change ─────────────────────────────────────
+        # ── Scatter: Volume (x) vs OI Change (y) ─────────────────────────────
         st.markdown("#### Volume vs OI Change — Scatter")
-        oi_chg_mode = st.radio(
-            "OI Δ", ["Signed", "Absolute"], horizontal=True,
-            key="flow_scatter_mode",
-        )
-        x_scatter = flow_win["oi_change"] if oi_chg_mode == "Signed" else flow_win["oi_change"].abs()
-        y_scatter = flow_win["volume"]
+        sc_c1, sc_c2 = st.columns([2, 1])
+        with sc_c1:
+            scatter_scope = st.radio(
+                "Scope", [f"This contract ({current_contract})", "All futures combined"],
+                horizontal=True, key="flow_scatter_scope",
+                help="All futures combined sums volume across every contract month on each "
+                     "date and takes the day-over-day change in total board OI — the whole "
+                     "curve's flow, so a roll that just moves OI between months nets out.",
+            )
+        with sc_c2:
+            oi_chg_mode = st.radio("OI Δ", ["Signed", "Absolute"], horizontal=True,
+                                   key="flow_scatter_mode")
 
-        if len(flow_win) < 5:
+        if scatter_scope == "All futures combined":
+            df_all_flow = load_data(commodity, mt)
+            comb = (df_all_flow.groupby("Date")
+                    .agg(volume=("volume", "sum"), open_interest=("open_interest", "sum"))
+                    .sort_index())
+            comb["oi_change"] = comb["open_interest"].diff()
+            sc_win = comb.dropna(subset=["oi_change"]).reset_index()
+            if cutoff_flow is not None:
+                sc_win = sc_win[sc_win["Date"] >= cutoff_flow]
+            sc_label = f"All {commodity} futures combined"
+        else:
+            sc_win = flow_win
+            sc_label = current_contract
+
+        x_scatter = sc_win["volume"]
+        y_scatter = sc_win["oi_change"] if oi_chg_mode == "Signed" else sc_win["oi_change"].abs()
+
+        if len(sc_win) < 5:
             st.info("Not enough days in this window for a scatter.")
         else:
             xs, ys = x_scatter.values, y_scatter.values
@@ -1654,7 +1696,7 @@ with tab_flow:
             x_line = np.array([xs.min(), xs.max()])
 
             if oi_chg_mode == "Signed":
-                pt_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in xs]
+                pt_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in ys]
             else:
                 pt_colors = "#4A7FD4"
 
@@ -1664,8 +1706,8 @@ with tab_flow:
                 marker=dict(color=pt_colors, size=8, opacity=0.7,
                            line=dict(color="white", width=0.8)),
                 name="Daily obs", showlegend=False,
-                customdata=flow_win["Date"].dt.strftime("%b %d, %Y"),
-                hovertemplate="<b>%{customdata}</b><br>OI Δ: %{x:+,.0f}<br>Volume: %{y:,.0f}<extra></extra>",
+                customdata=sc_win["Date"].dt.strftime("%b %d, %Y"),
+                hovertemplate="<b>%{customdata}</b><br>Volume: %{x:,.0f}<br>OI Δ: %{y:+,.0f}<extra></extra>",
             ))
             fig_sc.add_trace(go.Scatter(
                 x=x_line, y=slope * x_line + intercept, mode="lines",
@@ -1676,17 +1718,18 @@ with tab_flow:
                 x=[xs[-1]], y=[ys[-1]], mode="markers",
                 marker=dict(color="#f59e0b", size=13, symbol="star",
                            line=dict(color="white", width=1)),
-                name=f"Latest ({flow_win['Date'].iloc[-1].strftime('%b %d, %Y')})",
+                name=f"Latest ({sc_win['Date'].iloc[-1].strftime('%b %d, %Y')})",
             ))
             fig_sc.update_layout(
+                title=dict(text=f"<b>{sc_label}</b>", font=dict(size=13, color=C["font"]), x=0.01),
                 height=440, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
                 font=dict(color=C["font"], family="Inter, sans-serif"),
-                margin=dict(l=60, r=30, t=20, b=60),
-                xaxis=dict(title=("OI Change" if oi_chg_mode == "Signed" else "|OI Change|") + " (contracts)",
+                margin=dict(l=70, r=30, t=45, b=60),
+                xaxis=dict(title="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
+                          tickfont=dict(size=11, color=C["font"])),
+                yaxis=dict(title=("OI Change" if oi_chg_mode == "Signed" else "|OI Change|") + " (contracts)",
                           showgrid=True, gridcolor=C["grid"], zeroline=(oi_chg_mode == "Signed"),
                           zerolinecolor="rgba(0,0,0,0.25)", tickfont=dict(size=11, color=C["font"])),
-                yaxis=dict(title="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
-                          tickfont=dict(size=11, color=C["font"])),
                 legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0,
                            bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             )
@@ -1772,17 +1815,19 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
             with c3:
                 leg2 = st.selectbox("Spread Leg 2", syms_spot, index=leg2_idx, key="recap_spread_leg2")
 
-    # ── Main daily grid — always visible, no expander ───────────────────────
+    # Change wrt COT date sits ABOVE the daily grid: it's the summary read
+    # first, so it shouldn't be buried under a long scrolling table.
+    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:4px 0 4px'>"
+               "Change wrt COT date</div>", unsafe_allow_html=True)
+    st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
+
+    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
+               "Daily Grid</div>", unsafe_allow_html=True)
     html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
     if html_spot is None:
         st.info("No data in this window.")
     else:
         st.markdown(html_spot, unsafe_allow_html=True)
-
-    # ── Change wrt COT date — always visible, no expander ───────────────────
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
-               "Change wrt COT date</div>", unsafe_allow_html=True)
-    st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
 
     # ── Daily OI Change per Expiry — always visible, no expander ────────────
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
