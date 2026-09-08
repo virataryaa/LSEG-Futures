@@ -1657,7 +1657,7 @@ with tab_flow:
 
         # ── Scatter: Volume (x) vs OI Change (y) ─────────────────────────────
         st.markdown("#### Volume vs OI Change — Scatter")
-        sc_c1, sc_c2 = st.columns([2, 1])
+        sc_c1, sc_c2, sc_c3 = st.columns([2, 1, 1])
         with sc_c1:
             scatter_scope = st.radio(
                 "Scope", [f"This contract ({current_contract})", "All futures combined"],
@@ -1669,23 +1669,49 @@ with tab_flow:
         with sc_c2:
             oi_chg_mode = st.radio("OI Δ", ["Signed", "Absolute"], horizontal=True,
                                    key="flow_scatter_mode")
+        with sc_c3:
+            smooth_mode = st.radio(
+                "Smoothing", ["Daily", "5-day MA"], horizontal=True, key="flow_scatter_smooth",
+                help="5-day MA averages BOTH volume and OI change over a trailing 5 sessions "
+                     "before plotting, so each dot is a week of flow rather than one day — "
+                     "it strips the day-to-day noise that flattens the daily fit. Works on "
+                     "either scope.",
+            )
 
         if scatter_scope == "All futures combined":
             df_all_flow = load_data(commodity, mt)
-            comb = (df_all_flow.groupby("Date")
-                    .agg(volume=("volume", "sum"), open_interest=("open_interest", "sum"))
-                    .sort_index())
-            comb["oi_change"] = comb["open_interest"].diff()
-            sc_win = comb.dropna(subset=["oi_change"]).reset_index()
-            if cutoff_flow is not None:
-                sc_win = sc_win[sc_win["Date"] >= cutoff_flow]
+            sc_full = (df_all_flow.groupby("Date")
+                       .agg(volume=("volume", "sum"), open_interest=("open_interest", "sum"))
+                       .sort_index())
+            sc_full["oi_change"] = sc_full["open_interest"].diff()
+            sc_full = sc_full.dropna(subset=["oi_change"]).reset_index()
             sc_label = f"All {commodity} futures combined"
         else:
-            sc_win = flow_win
+            sc_full = curr_flow
             sc_label = current_contract
 
+        # |OI change| is taken BEFORE the rolling mean, not after: averaging the
+        # signed series first and then taking the absolute value would let a
+        # +2k day and a -2k day cancel to ~0 churn, which is the opposite of
+        # what "Absolute" is asking for (average daily turnover of OI).
+        sc_full = sc_full[["Date", "volume", "oi_change"]].copy()
+        if oi_chg_mode == "Absolute":
+            sc_full["oi_change"] = sc_full["oi_change"].abs()
+
+        # Smoothing runs on the FULL history, then the lookback window is
+        # sliced off it — smoothing the already-sliced window would burn the
+        # first 4 days of the window on half-formed (NaN) averages.
+        if smooth_mode == "5-day MA":
+            sc_full["volume"]    = sc_full["volume"].rolling(5).mean()
+            sc_full["oi_change"] = sc_full["oi_change"].rolling(5).mean()
+            sc_full = sc_full.dropna(subset=["volume", "oi_change"])
+            sc_label += "  —  5-day MA"
+
+        sc_win = sc_full[sc_full["Date"] >= cutoff_flow] if cutoff_flow is not None else sc_full
+
+        ma_sfx    = " , 5d MA" if smooth_mode == "5-day MA" else ""
         x_scatter = sc_win["volume"]
-        y_scatter = sc_win["oi_change"] if oi_chg_mode == "Signed" else sc_win["oi_change"].abs()
+        y_scatter = sc_win["oi_change"]
 
         if len(sc_win) < 5:
             st.info("Not enough days in this window for a scatter.")
@@ -1707,7 +1733,9 @@ with tab_flow:
                            line=dict(color="white", width=0.8)),
                 name="Daily obs", showlegend=False,
                 customdata=sc_win["Date"].dt.strftime("%b %d, %Y"),
-                hovertemplate="<b>%{customdata}</b><br>Volume: %{x:,.0f}<br>OI Δ: %{y:+,.0f}<extra></extra>",
+                hovertemplate="<b>%{customdata}</b><br>Volume" + ma_sfx.replace(" , ", " ") +
+                              ": %{x:,.0f}<br>OI Δ" + ma_sfx.replace(" , ", " ") +
+                              ": %{y:+,.0f}<extra></extra>",
             ))
             fig_sc.add_trace(go.Scatter(
                 x=x_line, y=slope * x_line + intercept, mode="lines",
@@ -1725,9 +1753,10 @@ with tab_flow:
                 height=440, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
                 font=dict(color=C["font"], family="Inter, sans-serif"),
                 margin=dict(l=70, r=30, t=45, b=60),
-                xaxis=dict(title="Volume (contracts)", showgrid=True, gridcolor=C["grid"],
+                xaxis=dict(title=f"Volume (contracts{ma_sfx})", showgrid=True, gridcolor=C["grid"],
                           tickfont=dict(size=11, color=C["font"])),
-                yaxis=dict(title=("OI Change" if oi_chg_mode == "Signed" else "|OI Change|") + " (contracts)",
+                yaxis=dict(title=("OI Change" if oi_chg_mode == "Signed" else "|OI Change|")
+                                 + f" (contracts{ma_sfx})",
                           showgrid=True, gridcolor=C["grid"], zeroline=(oi_chg_mode == "Signed"),
                           zerolinecolor="rgba(0,0,0,0.25)", tickfont=dict(size=11, color=C["font"])),
                 legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0,
