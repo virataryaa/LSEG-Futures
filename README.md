@@ -17,22 +17,22 @@ back to 2011.
 - **`Database/{comm}_futures.parquet`** — one file per commodity, same 13-
   column schema as the ICE source: `Date, commodity, ice_symbol, month, year,
   FND, LTD, Open, High, Low, settlement, volume, open_interest`.
-- **`Dashboard/app.py`** — the Streamlit entry point. **Streamlit Cloud must
-  point at this file**, not at `oi_progression.py`. It is a multipage app:
-  each page is its own script, so only the page being viewed executes and a
-  widget on one no longer re-runs the other's computations.
 - **`Dashboard/oi_progression.py`** — copied from the ICE source (pure parquet
-  consumer, zero API calls). OI Progression, Volume, Spreads, Flow and grid
-  tabs, DTE-aligned seasonality banding. Single-commodity by construction.
-- **`Dashboard/oi_seasonals.py`** — deferred OI seasonals. Total OI across a
-  *basket* of contracts spanning several markets and delivery months at once
-  (CC+LCC Z+H, SB+LSU K+N+V, or an arbitrary combination such as KC Z+H
-  together with RC X+F), aligned on days to the basket's back-leg expiry, one
-  line per crop year plus a rolling mean and percentile band. Replaces the
-  desk's Excel sheet — see "Two bugs it fixes" below.
-- **`Dashboard/common.py`** — shared constants and cached parquet loaders, so
-  the two pages share one cache entry per commodity rather than each holding
-  its own copy.
+  consumer, zero API calls). OI Progression, Recap, Charts, Spreads, Volume,
+  Flow and grid tabs, DTE-aligned seasonality banding. Single-commodity by
+  construction. **Its own Streamlit app.**
+- **`Dashboard/oi_seasonals.py`** — deferred OI seasonals, **a separate
+  Streamlit app** (deliberately not a page of the one above: it works on a
+  basket spanning several markets at once, which has no single commodity to
+  select, and keeping the deploys separate means neither app re-runs the
+  other's computations). Total OI across a basket of contracts spanning
+  several markets and delivery months (CC+LCC Z+H, SB+LSU K+N+V, or an
+  arbitrary combination such as KC Z+H together with RC X+F), aligned on days
+  to the basket's back-leg expiry, one line per crop year plus a rolling mean
+  and percentile band. Replaces the desk's Excel sheet — see "Two bugs it
+  fixes" below.
+- **`Dashboard/common.py`** — shared constants and cached parquet loaders used
+  by both apps.
 - **`Automator/`** — `run.bat` (daily incremental update + git push + email),
   `run_updater.py`.
 
@@ -103,13 +103,14 @@ python Code/futures_builder_lseg.py              # all 7, incremental
 python Code/futures_builder_lseg.py --full        # all 7, full rebuild
 python Code/futures_builder_lseg.py KC RC         # specific commodities
 python Code/futures_builder_lseg.py CT --full     # single commodity, full rebuild
-streamlit run Dashboard/app.py
+streamlit run Dashboard/oi_progression.py    # main OI dashboard
+streamlit run Dashboard/oi_seasonals.py      # deferred OI seasonals
 ```
 
 Requires an authenticated LSEG Workspace/Eikon session on the host running
 the builder.
 
-## Two bugs the seasonals page fixes
+## Two bugs the seasonals app fixes
 
 The Excel sheet it replaces built each crop year by summing four hardcoded
 vendor RICs. Two failure modes were found in it and are handled structurally

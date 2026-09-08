@@ -8,8 +8,8 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import date
 
-# set_page_config now lives in app.py — Streamlit only allows it on the entry
-# script of a multipage app, and calling it again from a page raises.
+st.set_page_config(page_title="Futures Dashboard", page_icon="📈", layout="wide")
+
 from common import (DB_PATH, COMMODITIES, MONTH_NAMES, MONTH_ORDER, C,
                     _mtime, load_data, load_enriched)
 

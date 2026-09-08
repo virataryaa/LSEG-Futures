@@ -15,6 +15,9 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import date
 
+st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
+                   layout="wide")
+
 from common import COMMODITIES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data
 
 # Categorical line colours, fixed order, never cycled. The dashboard's
