@@ -19,7 +19,7 @@ st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
                    layout="wide")
 
 from common import (COMMODITIES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data,
-                    _oi_heatmap_style, _oi_chg_style)
+                    _oi_heatmap_style, _oi_chg_style, render_data_freshness)
 
 # Categorical line colours, fixed order, never cycled. The dashboard's
 # "current" orange is reserved for the live crop year, so comparison years take
@@ -249,6 +249,9 @@ with st.sidebar:
                             help="25th-75th and min-max across the years above.")
     max_dte = st.slider("Max days to expiry", 200, 900, 700, step=25, key="seas_max_dte")
     table_step = st.slider("Table step (days)", 1, 14, 7, key="seas_step")
+
+    st.markdown("---")
+    render_data_freshness(st.sidebar)
 
 # ── Common DTE grid, mean and band ────────────────────────────────────────────
 grid    = np.arange(0, max_dte + 1)

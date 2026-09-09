@@ -324,6 +324,80 @@ def save(comm: str, new: pd.DataFrame, full: bool):
               f"{merged['ice_symbol'].nunique()} contracts")
 
 
+def topup_open_interest(ld, comm: str) -> int:
+    """Fill the last completed session's open interest from the real-time quote.
+
+    `get_history` reads Refinitiv's daily timeseries file, which is rebuilt once
+    a day and does not carry the newest session's open interest until after
+    midnight — so a morning or afternoon run stores the session's settlement and
+    volume with OPINT_1 still null. The real-time quote for the same RIC already
+    carries it. Verified across LCC/RC/LSU on 2026-09-09: the snapshot OPINT_1
+    matched the stored previous-session OI exactly on 6 of 6 contracts, and
+    never the session before it — so the quote's open interest belongs to the
+    last COMPLETED session, not to today and not to an intraday tally.
+
+    Only that one session is ever written. A snapshot says nothing about older
+    gaps, so those are left for the historical fetch to repair on its own.
+    """
+    out_path = DB_DIR / f"{comm.lower()}_futures.parquet"
+    if not out_path.exists():
+        return 0
+    df = pd.read_parquet(out_path)
+    df["Date"] = pd.to_datetime(df["Date"])
+
+    today = pd.Timestamp.today().normalize()
+    prior = df[df["Date"] < today]
+    if prior.empty:
+        return 0
+    target = prior["Date"].max()          # the last completed session
+
+    need = df[(df["Date"] == target) & df["settlement"].notna()
+              & df["open_interest"].isna()]
+    if need.empty:
+        log.info(f"  {comm}: OI already complete for {target.date()}")
+        return 0
+
+    rics = sorted(need["ice_symbol"].unique())
+    try:
+        snap = ld.get_data(universe=list(rics), fields=["OPINT_1"])
+    except Exception as e:
+        log.warning(f"  {comm}: OI top-up quote failed: {e}")
+        return 0
+    snap = snap.set_index("Instrument")["OPINT_1"]
+
+    # Guard against a stale quote: if the exchange has not published the new
+    # session's OI yet, the quote still shows the PREVIOUS session's number, and
+    # writing that onto `target` would invent a flat day. An exactly unchanged
+    # OI is possible but vanishingly rare on these contracts, so skipping such a
+    # contract (the historical fetch repairs it next run) is the safe way to be
+    # wrong.
+    prev_oi = (df[(df["Date"] < target) & df["open_interest"].notna()]
+               .sort_values("Date").groupby("ice_symbol")["open_interest"].last())
+
+    filled, stale = 0, []
+    for ric in rics:
+        v = snap.get(ric)
+        if pd.isna(v):
+            continue
+        pv = prev_oi.get(ric)
+        if pd.notna(pv) and abs(float(v) - float(pv)) < 1:
+            stale.append(ric)
+            continue
+        df.loc[(df["Date"] == target) & (df["ice_symbol"] == ric),
+               "open_interest"] = float(v)
+        filled += 1
+
+    if stale:
+        log.info(f"  {comm}: {len(stale)} contract(s) quoted an unchanged OI "
+                 f"({', '.join(stale[:4])}{'...' if len(stale) > 4 else ''}) — "
+                 f"treated as not-yet-published, left for the next run")
+    if filled:
+        df = df.sort_values(["ice_symbol", "Date"]).reset_index(drop=True)
+        df.to_parquet(out_path, index=False)
+        log.info(f"  {comm}: filled OI on {target.date()} for {filled} contract(s)")
+    return filled
+
+
 def incremental_targets(comm: str) -> dict | None:
     """Contracts whose LTD is within the last 14 days or still to come get
     refetched from (last known date - 3 days), same window logic as the ICE
@@ -365,6 +439,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("commodities", nargs="*", default=None)
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--oi-topup-only", action="store_true",
+                        help="Skip the history fetch; only fill the last completed "
+                             "session's open interest from the real-time quote. "
+                             "Idempotent — safe to run repeatedly during the day.")
     args = parser.parse_args()
 
     target_commodities = [c.upper() for c in args.commodities] if args.commodities else COMMODITIES
@@ -382,6 +460,9 @@ if __name__ == "__main__":
                 log.warning(f"Unknown commodity {comm}, skipping")
                 continue
             log.info(f"--- {comm} ---")
+            if args.oi_topup_only:
+                topup_open_interest(ld, comm)
+                continue
             if args.full:
                 new = build_commodity(ld, comm, START_YEAR, end_year, incremental_from=None)
             else:
@@ -394,6 +475,11 @@ if __name__ == "__main__":
                 log.warning(f"  {comm}: no data fetched")
                 continue
             save(comm, new, args.full)
+            # Refinitiv's daily timeseries lags the newest session's open
+            # interest; the quote already has it. Runs after every build so the
+            # daily job self-heals rather than leaving the dashboard a session
+            # behind on the US markets.
+            topup_open_interest(ld, comm)
     except LSEGUnresponsive as e:
         log.error(f"ABORTING: {e}")
         print(f"ABORTING: {e}", file=sys.stderr)  # run_updater.py's email body quotes stderr

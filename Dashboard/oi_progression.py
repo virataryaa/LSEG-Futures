@@ -13,7 +13,8 @@ st.set_page_config(page_title="Futures Dashboard", page_icon="📈", layout="wid
 from common import (DB_PATH, COMMODITIES, MONTH_NAMES, MONTH_ORDER, C,
                     _mtime, load_data, load_enriched,
                     _safe, _oi_heatmap_style, _bar_style,
-                    _diverging_bar_style, _oi_chg_style, _vol_style)
+                    _diverging_bar_style, _oi_chg_style, _vol_style,
+                    render_data_freshness)
 
 
 def _most_active_month(df: pd.DataFrame) -> str:
@@ -1074,6 +1075,9 @@ with st.sidebar:
 
     st.markdown("---")
     show_individual = st.toggle("Show individual years", value=False)
+
+    st.markdown("---")
+    render_data_freshness(st.sidebar)
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────

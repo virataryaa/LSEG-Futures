@@ -143,3 +143,59 @@ def _oi_chg_style(v, vmax):
 
 def _vol_style(v, vmax):
     return _bar_style(v, vmax, "rgba(56,189,248,0.55)")
+
+
+# -- Data freshness panel --------------------------------------------------
+# load_data() filters open_interest > 0, so it cannot show the settlement-vs-OI
+# lag: a session whose OI has not been published yet is simply absent from it.
+# This reads the two date columns raw so the gap stays visible.
+@st.cache_data(show_spinner=False)
+def _freshness_row(commodity: str, mtime: float = 0.0):
+    filename, _ = COMMODITIES[commodity]
+    df = pd.read_parquet(DB_PATH / filename, columns=["Date", "settlement", "open_interest"])
+    df["Date"] = pd.to_datetime(df["Date"])
+    px = df.loc[df["settlement"].notna(), "Date"].max()
+    oi = df.loc[df["open_interest"].notna() & (df["open_interest"] > 0), "Date"].max()
+    return px, oi
+
+
+def render_data_freshness(st_target=None):
+    """Latest settlement and open-interest date per market.
+
+    Refinitiv's daily timeseries carries a session's settlement before its open
+    interest — the US markets routinely sit a session behind until the builder's
+    quote top-up runs — so the two dates are shown separately rather than as one
+    "last updated", which would have implied the OI was current when it was not.
+    """
+    tgt = st_target or st
+    rows, newest_oi, any_lag = [], None, False
+    for c in COMMODITIES:
+        try:
+            px, oi = _freshness_row(c, _mtime(c))
+        except Exception:
+            continue
+        if pd.isna(oi):
+            continue
+        newest_oi = oi if newest_oi is None else max(newest_oi, oi)
+        lag = pd.notna(px) and px > oi
+        any_lag = any_lag or lag
+        dot = "#f59e0b" if lag else "#16a34a"
+        note = f" <span style='color:#9ca3af'>(px {px:%d %b})</span>" if lag else ""
+        rows.append(
+            f"<tr><td style='color:#6b7280'>{c}</td>"
+            f"<td style='text-align:right'>{oi:%d %b}{note}</td>"
+            f"<td style='text-align:right'><span style='color:{dot}'>&#9679;</span></td></tr>")
+
+    if not rows:
+        return
+    tip = ("Amber = that market has a settlement for a session whose open interest "
+           "has not been published yet. It clears on the builder's next quote top-up."
+           if any_lag else "All markets have open interest through their latest session.")
+    tgt.markdown(
+        "<div style='font-size:.70rem;font-weight:600;color:#6b7280;"
+        "letter-spacing:.02em;margin:.2rem 0 .25rem'>OI AS OF</div>"
+        "<table style='width:100%;font-size:.68rem;border-collapse:collapse'>"
+        + "".join(rows) + "</table>",
+        unsafe_allow_html=True)
+    tgt.caption(tip)
+
