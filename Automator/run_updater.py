@@ -13,7 +13,7 @@ import pandas as pd
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from oi_report import build_oi_detail, market_dates
+from oi_report import build_oi_detail, build_html_report, market_dates
 
 ROOT     = Path(__file__).resolve().parent.parent
 CODE_DIR = ROOT / "Code"
@@ -27,14 +27,20 @@ today  = datetime.date.today()
 run_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def send_outlook_email(subject: str, body: str):
+def send_outlook_email(subject: str, body: str, html: str | None = None):
+    """Sends the HTML table when one is available and falls back to the plain
+    text otherwise. The log keeps the plain-text version either way — run.bat
+    pipes stdout through cmd, which is no place for markup."""
     try:
         import win32com.client
         outlook      = win32com.client.Dispatch("Outlook.Application")
         mail         = outlook.CreateItem(0)
         mail.To      = TO_EMAIL
         mail.Subject = subject
-        mail.Body    = body
+        if html:
+            mail.HTMLBody = html
+        else:
+            mail.Body = body
         mail.Send()
         print(f"\n  Email sent -> {TO_EMAIL}")
     except Exception as e:
@@ -87,7 +93,7 @@ lines = [
     f"{'LAST DATE':>12}  {'OI DATE':>12}  STATUS",
     "-" * 78,
 ]
-oi_lagging = []
+oi_lagging, summary_rows = [], []
 for comm in COMMODITIES:
     upserted   = after[comm] - before[comm]
     total      = after[comm]
@@ -102,6 +108,8 @@ for comm in COMMODITIES:
     status_str = "MISSING" if total == 0 else ("OI LAGS" if lag else "OK")
     lines.append(f"{comm:<10} {upserted:>14,}  {total:>12,}  {last_d:>12}  "
                   f"{oi_d:>12}  {status_str}")
+    summary_rows.append(dict(comm=comm, upserted=upserted, total=total,
+                             last_date=last_d, oi_date=oi_d, status=status_str))
 
 if oi_lagging:
     lines += ["",
@@ -122,6 +130,12 @@ except Exception:
     lines += ["  detail section failed:", traceback.format_exc()]
 
 body    = "\n".join(lines)
+try:
+    html_body = build_html_report(DB_DIR, COMMODITIES, run_dt, summary_rows)
+except Exception:
+    html_body = None
+    print("  HTML report failed, falling back to plain text:")
+    print(traceback.format_exc())
 subject = f"[OK] ICE-FUTURES (LSEG) — {today}" if all_ok else f"[Need Intervention] ICE-FUTURES (LSEG) — {today}"
 
 print(f"\n{body}")
@@ -139,5 +153,5 @@ if script_ok:
     except Exception as e:
         print(f"\n  Git push error: {e}")
 
-send_outlook_email(subject, body)
+send_outlook_email(subject, body, html_body)
 print(f"\nDone — {run_dt}")
