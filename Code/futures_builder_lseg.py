@@ -365,32 +365,41 @@ def topup_open_interest(ld, comm: str) -> int:
         return 0
     snap = snap.set_index("Instrument")["OPINT_1"]
 
-    # Guard against a stale quote: if the exchange has not published the new
-    # session's OI yet, the quote still shows the PREVIOUS session's number, and
-    # writing that onto `target` would invent a flat day. An exactly unchanged
-    # OI is possible but vanishingly rare on these contracts, so skipping such a
-    # contract (the historical fetch repairs it next run) is the safe way to be
-    # wrong.
+    # Freshness is decided per MARKET, not per contract. If the exchange has not
+    # published the new session's OI yet, every quote still shows the PREVIOUS
+    # session's number and writing those onto `target` would shift a whole
+    # session's OI back by one day.
+    #
+    # Judging contract by contract does not work in either direction: a quiet
+    # back month can genuinely carry an unchanged OI for days (so "unchanged"
+    # alone does not prove staleness), and a contract with no prior OI at all
+    # has nothing to compare against — that hole wrote two stale LSU values onto
+    # 2026-09-09 before this was tightened. So compare every contract that CAN
+    # be compared, and accept the batch only if the market as a whole has moved.
     prev_oi = (df[(df["Date"] < target) & df["open_interest"].notna()]
                .sort_values("Date").groupby("ice_symbol")["open_interest"].last())
 
-    filled, stale = 0, []
+    comparable = [r for r in rics if pd.notna(prev_oi.get(r)) and pd.notna(snap.get(r))]
+    if not comparable:
+        log.info(f"  {comm}: no contract with a prior OI to check the quote against — "
+                 f"skipped, left for the historical fetch")
+        return 0
+    moved = [r for r in comparable
+             if abs(float(snap[r]) - float(prev_oi[r])) >= 1]
+    if len(moved) * 2 < len(comparable):
+        log.info(f"  {comm}: only {len(moved)}/{len(comparable)} contracts show a "
+                 f"changed OI — {target.date()} not published yet, left for the "
+                 f"next run")
+        return 0
+
+    filled = 0
     for ric in rics:
         v = snap.get(ric)
         if pd.isna(v):
             continue
-        pv = prev_oi.get(ric)
-        if pd.notna(pv) and abs(float(v) - float(pv)) < 1:
-            stale.append(ric)
-            continue
         df.loc[(df["Date"] == target) & (df["ice_symbol"] == ric),
                "open_interest"] = float(v)
         filled += 1
-
-    if stale:
-        log.info(f"  {comm}: {len(stale)} contract(s) quoted an unchanged OI "
-                 f"({', '.join(stale[:4])}{'...' if len(stale) > 4 else ''}) — "
-                 f"treated as not-yet-published, left for the next run")
     if filled:
         df = df.sort_values(["ice_symbol", "Date"]).reset_index(drop=True)
         df.to_parquet(out_path, index=False)
