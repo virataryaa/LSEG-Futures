@@ -334,7 +334,9 @@ with tab_chart:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    vs = "" if pd.isna(ref) else f"  ·  {(cur_oi / ref - 1) * 100:+.1f}% vs {len(avg_years)}Y mean"
+    # `ref > 0` not just notna: a zero mean would divide by zero here.
+    vs = (f"  ·  {(cur_oi / ref - 1) * 100:+.1f}% vs {len(avg_years)}Y mean"
+          if pd.notna(ref) and ref > 0 else "")
     st.caption(
         f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry{vs}",
         help="Aligned on days to the back leg's expiry — for Z+H that is time to H "
@@ -394,10 +396,18 @@ with tab_data:
     mean_label = f"{len(avg_years)}Y Mean" if avg_years else None
 
     # DTE descending, so the table runs earliest -> latest down the page, the
-    # way the desk sheet does.
-    lvl = aligned[tbl_cols].loc[::-1].iloc[::table_step]
+    # way the desk sheet does. .iloc for both the reversal and the step: purely
+    # positional, so it cannot pick up label-slicing semantics from the index.
+    lvl = aligned[tbl_cols].iloc[::-1].iloc[::table_step].copy()
     if mean_label:
-        lvl[mean_label] = band["mean"].loc[::-1].iloc[::table_step]
+        # reindex onto the rows the table actually has, NOT an independent
+        # reversed-and-stepped slice of `band`. band is .dropna(how="all")-ed,
+        # so when the averaged years carry no data all the way out to max_dte
+        # its top row is lower than the table's, and the two step sequences
+        # drift out of phase: the cocoa preset at max_dte=900 tops out at
+        # DTE 814, giving 900,893,886... against 814,807,800... — zero rows in
+        # common, so the whole Mean column rendered as em-dashes.
+        lvl[mean_label] = band["mean"].reindex(lvl.index)
 
     # Change between consecutive rows, i.e. over one table step, not one day —
     # taken after the resampling so it matches what is actually on screen.

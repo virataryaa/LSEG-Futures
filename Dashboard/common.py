@@ -16,82 +16,94 @@ from pathlib import Path
 MONTH_ORDER = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5,  "M": 6,
                "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
 
-DB_PATH = Path(__file__).parent.parent / "Database"
-
-COMMODITIES = {
-    "KC":  ("kc_futures.parquet",  "Coffee (KC)"),
-    "CC":  ("cc_futures.parquet",  "Cocoa (CC)"),
-    "CT":  ("ct_futures.parquet",  "Cotton (CT)"),
-    "SB":  ("sb_futures.parquet",  "Sugar #11 (SB)"),
-    "RC":  ("rc_futures.parquet",  "Robusta (RC)"),
-    "LCC": ("lcc_futures.parquet", "Liffe Cocoa (LCC)"),
-    "LSU": ("lsu_futures.parquet", "Liffe Sugar (LSU)"),
-}
-
-MONTH_NAMES = {
-    "F": "January", "G": "February", "H": "March",  "J": "April",
-    "K": "May",     "M": "June",     "N": "July",   "Q": "August",
-    "U": "September","V": "October", "X": "November","Z": "December",
-}
-
-C = {
-    # OI charts
-    "oi_outer":  "rgba(99, 149, 237, 0.10)",
-    "oi_inner":  "rgba(99, 149, 237, 0.28)",
-    "oi_avg":    "#4A7FD4",
-    # OI share
-    "sh_outer":  "rgba(52, 168, 83, 0.10)",
-    "sh_inner":  "rgba(52, 168, 83, 0.25)",
-    "sh_avg":    "#34A853",
-    # Vol/OI ratio
-    "vr_outer":  "rgba(20, 184, 166, 0.10)",
-    "vr_inner":  "rgba(20, 184, 166, 0.28)",
-    "vr_avg":    "#0D9488",
-    # Vol market share
-    "vs_outer":  "rgba(139, 92, 246, 0.10)",
-    "vs_inner":  "rgba(139, 92, 246, 0.28)",
-    "vs_avg":    "#7C3AED",
-    # Rolling volume
-    "rv_outer":  "rgba(245, 158, 11, 0.10)",
-    "rv_inner":  "rgba(245, 158, 11, 0.28)",
-    "rv_avg":    "#D97706",
-    # Common
-    "current":   "#E8470A",
-    "individual":"rgba(160,160,160,0.4)",
-    "grid":      "rgba(0,0,0,0.07)",
-    "bg":        "#ffffff",
-    "font":      "#1a1a1a",
-    "vline":     "rgba(0,0,0,0.18)",
-}
-
-
-# ── Data loaders ──────────────────────────────────────────────────────────────
-def _mtime(commodity: str) -> float:
-    filename, _ = COMMODITIES[commodity]
-    p = DB_PATH / filename
-    return p.stat().st_mtime if p.exists() else 0.0
-
-
-@st.cache_data
-def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
-    filename, _ = COMMODITIES[commodity]
-    df = pd.read_parquet(DB_PATH / filename)
-    df["Date"] = pd.to_datetime(df["Date"])
-    df["LTD"]  = pd.to_datetime(df["LTD"])
-    df["days_to_expiry"] = (df["LTD"] - df["Date"]).dt.days
-    return df[df["open_interest"] > 0].copy()
-
-
-@st.cache_data
-def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
-    """Adds oi_share_pct, vol_share_pct, vol_oi_ratio to every row."""
-    df = load_data(commodity, mtime)
-    tot_oi  = df.groupby("Date")["open_interest"].sum().rename("total_oi")
-    tot_vol = df.groupby("Date")["volume"].sum().rename("total_vol")
-    df = df.merge(tot_oi, on="Date").merge(tot_vol, on="Date")
-    df["oi_share_pct"] = df["open_interest"] / df["total_oi"]  * 100
-    df["vol_share_pct"]= df["volume"]        / df["total_vol"] * 100
-    df["vol_oi_ratio"] = df["volume"]        / df["open_interest"]
+DB_PATH = Path(__file__).parent.parent / "Database"
+
+COMMODITIES = {
+    "KC":  ("kc_futures.parquet",  "Coffee (KC)"),
+    "CC":  ("cc_futures.parquet",  "Cocoa (CC)"),
+    "CT":  ("ct_futures.parquet",  "Cotton (CT)"),
+    "SB":  ("sb_futures.parquet",  "Sugar #11 (SB)"),
+    "RC":  ("rc_futures.parquet",  "Robusta (RC)"),
+    "LCC": ("lcc_futures.parquet", "Liffe Cocoa (LCC)"),
+    "LSU": ("lsu_futures.parquet", "Liffe Sugar (LSU)"),
+}
+
+MONTH_NAMES = {
+    "F": "January", "G": "February", "H": "March",  "J": "April",
+    "K": "May",     "M": "June",     "N": "July",   "Q": "August",
+    "U": "September","V": "October", "X": "November","Z": "December",
+}
+
+C = {
+    # OI charts
+    "oi_outer":  "rgba(99, 149, 237, 0.10)",
+    "oi_inner":  "rgba(99, 149, 237, 0.28)",
+    "oi_avg":    "#4A7FD4",
+    # OI share
+    "sh_outer":  "rgba(52, 168, 83, 0.10)",
+    "sh_inner":  "rgba(52, 168, 83, 0.25)",
+    "sh_avg":    "#34A853",
+    # Vol/OI ratio
+    "vr_outer":  "rgba(20, 184, 166, 0.10)",
+    "vr_inner":  "rgba(20, 184, 166, 0.28)",
+    "vr_avg":    "#0D9488",
+    # Vol market share
+    "vs_outer":  "rgba(139, 92, 246, 0.10)",
+    "vs_inner":  "rgba(139, 92, 246, 0.28)",
+    "vs_avg":    "#7C3AED",
+    # Rolling volume
+    "rv_outer":  "rgba(245, 158, 11, 0.10)",
+    "rv_inner":  "rgba(245, 158, 11, 0.28)",
+    "rv_avg":    "#D97706",
+    # Common
+    "current":   "#E8470A",
+    "individual":"rgba(160,160,160,0.4)",
+    "grid":      "rgba(0,0,0,0.07)",
+    "bg":        "#ffffff",
+    "font":      "#1a1a1a",
+    "vline":     "rgba(0,0,0,0.18)",
+}
+
+
+# ── Data loaders ──────────────────────────────────────────────────────────────
+def _mtime(commodity: str) -> float:
+    filename, _ = COMMODITIES[commodity]
+    p = DB_PATH / filename
+    return p.stat().st_mtime if p.exists() else 0.0
+
+
+_NUMERIC_COLS = ["Open", "High", "Low", "settlement", "volume", "open_interest"]
+
+
+@st.cache_data
+def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
+    filename, _ = COMMODITIES[commodity]
+    df = pd.read_parquet(DB_PATH / filename)
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["LTD"]  = pd.to_datetime(df["LTD"])
+    # The parquet stores prices/OI as pandas' nullable Float64, whose missing
+    # value is pd.NA, not np.nan. pd.NA does not behave like nan once a scalar
+    # escapes the Series: float(pd.NA) and bool(pd.NA) both RAISE, and so does
+    # f-string formatting of it — so one missing settlement pulled out with
+    # .at[] can take down a whole table builder. Downcast once, here, so every
+    # consumer on both pages gets plain float64 + np.nan semantics.
+    for c in _NUMERIC_COLS:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("float64")
+    df["days_to_expiry"] = (df["LTD"] - df["Date"]).dt.days
+    return df[df["open_interest"] > 0].copy()
+
+
+@st.cache_data
+def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
+    """Adds oi_share_pct, vol_share_pct, vol_oi_ratio to every row."""
+    df = load_data(commodity, mtime)
+    tot_oi  = df.groupby("Date")["open_interest"].sum().rename("total_oi")
+    tot_vol = df.groupby("Date")["volume"].sum().rename("total_vol")
+    df = df.merge(tot_oi, on="Date").merge(tot_vol, on="Date")
+    df["oi_share_pct"] = df["open_interest"] / df["total_oi"]  * 100
+    df["vol_share_pct"]= df["volume"]        / df["total_vol"] * 100
+    df["vol_oi_ratio"] = df["volume"]        / df["open_interest"]
     return df
 
 # -- Conditional-formatting helpers ---------------------------------------
