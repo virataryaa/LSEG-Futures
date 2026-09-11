@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+import re
 from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import date
@@ -92,6 +93,12 @@ def _hist_band(dense_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
     band = band.sort_values("days_to_expiry")
     for c in ["hist_mean", "hist_q25", "hist_q75"]:
         band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
+    # min/max stay the true extremes (unsmoothed), so at a local spike the
+    # smoothed quartiles could sit outside them and the inner fill would
+    # render outside the outer one. Widen the envelope rather than smoothing
+    # min/max, which would stop them being extremes at all.
+    band["hist_max"] = band[["hist_max", "hist_q75"]].max(axis=1)
+    band["hist_min"] = band[["hist_min", "hist_q25"]].min(axis=1)
     return band
 
 
@@ -168,9 +175,14 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
 def compute_band(commodity, month, hist_year_range, metric_col,
                  roll_n=None, use_enriched=False, mtime=0.0):
     """
-    Generic band + current-contract computation for any metric.
+    Generic historical-band computation for any metric.
     roll_n: if set, compute rolling(roll_n).mean() on 'volume' first (by Date order).
-    Returns (band, curr_df, active_syms, hist_syms) or None.
+    Returns (band, active_syms, hist_syms) or None.
+
+    Deliberately does NOT return a current-contract frame: it used to hand
+    back active_syms[0] (nearest expiry), but every call site immediately
+    discarded it and rebuilt from the sidebar's selected contract, so the
+    returned frame was both unused and wrong whenever the two differed.
     """
     df = load_enriched(commodity, mtime) if use_enriched else load_data(commodity, mtime)
     dm = df[df["month"] == month].copy()
@@ -196,8 +208,7 @@ def compute_band(commodity, month, hist_year_range, metric_col,
     hist_dense = _densify_by_dte(hist_df, metric_col)
     band = _hist_band(hist_dense, metric_col)
 
-    curr_df = dm[dm["ice_symbol"] == active_syms[0]].sort_values("Date").copy()
-    return band, curr_df, active_syms, hist_syms
+    return band, active_syms, hist_syms
 
 
 # ── Generic chart builder ─────────────────────────────────────────────────────
@@ -267,7 +278,7 @@ def build_chart(band, curr_df, metric_col, current_sym,
                    showgrid=True, gridcolor=C["grid"], zeroline=False,
                    tickfont=dict(size=11, color=C["font"])),
         yaxis=dict(title=y_title, showgrid=True, gridcolor=C["grid"],
-                   zeroline=False, tickformat=y_fmt.replace(",",",.0f").replace(".1f",".1f"),
+                   zeroline=False, tickformat=y_fmt,
                    ticksuffix=y_suffix, tickfont=dict(size=11, color=C["font"])),
         plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
         font=dict(color=C["font"], family="Inter, sans-serif"),
@@ -332,7 +343,10 @@ def build_oi_vol_table_html(commodity: str, table_lookback: int, mtime: float = 
     or None if there's no data in the window."""
     df_all_tbl = load_data(commodity, mtime).sort_values(["ice_symbol", "Date"])
     df_all_tbl["oi_change"] = df_all_tbl.groupby("ice_symbol")["open_interest"].diff()
-    df_all_tbl["px_change"] = df_all_tbl.groupby("ice_symbol")["settlement"].pct_change() * 100
+    # fill_method=None: the default ('pad') carries the last settlement across a
+    # gap and then prints a fake 0.00% move against it. A missing price should
+    # leave the cell blank, not invent an unchanged day.
+    df_all_tbl["px_change"] = df_all_tbl.groupby("ice_symbol")["settlement"].pct_change(fill_method=None) * 100
 
     max_date_tbl = df_all_tbl["Date"].max()
     cutoff_tbl   = max_date_tbl - pd.Timedelta(days=table_lookback)
@@ -464,6 +478,22 @@ _CCOL_W = 72
 _DATECOL_W = 96
 
 
+_CONTRACT_SUFFIX = re.compile(r"^(.*)([FGHJKMNQUVXZ]\d+(?:\^\d+)?)$")
+
+
+def _leg_suffix(sym: str) -> str:
+    """Month+year tail of a contract symbol, e.g. 'LRCX6' -> 'X6'.
+
+    Spread labels used to slice with len(commodity), which assumes the symbol
+    root equals the commodity key. It does not for Robusta: the key is 'RC'
+    but every symbol is rooted 'LRC', so leg2[2:] turned LRCU6-LRCX6 into
+    "LRCU6-CX6". Matching the month code from the right works for all seven
+    roots (KC/CC/CT/SB/LRC/LCC/LSU) and keeps the ^1/^2 decade suffix.
+    """
+    m = _CONTRACT_SUFFIX.match(sym)
+    return m.group(2) if m else sym
+
+
 def _sign_color(v) -> str:
     if pd.isna(v) or v == 0:
         return "#1d1d1f"
@@ -475,20 +505,45 @@ def _spot_series(oi_piv: pd.DataFrame, px_piv: pd.DataFrame):
     'spot'/most-active month) and pull its OI and settlement price — the
     active month shifts over time as contracts roll (e.g. Z6 now, H7 once
     Z6 expires), unlike 'nearest expiry' which would stay on a thin,
-    already-rolled-out-of front month."""
+    already-rolled-out-of front month.
+
+    Levels are the stitched series, but every CHANGE is taken within the
+    day's own spot contract, against that same contract's previous session:
+    diffing the stitched level across a roll would book the calendar spread
+    as a price/OI move. On KC's 2026-07-28 roll (KCU6 -> KCZ6) the stitched
+    pct_change read -1.42% on a day KCZ6 actually settled +4.24%.
+
+    Returns (sym, oi, price, oi_chg, px_chg_pct, oi_5d) — the last three
+    all contract-consistent; oi_5d is the spot contract's own trailing
+    5-session mean, not a mean of the stitched (roll-discontinuous) level.
+    """
+    prev_oi = oi_piv.shift(1)
+    prev_px = px_piv.shift(1)
+    roll5   = oi_piv.rolling(5).mean()
+
     syms_out, oi_out, px_out = [], [], []
+    oichg_out, pxchg_out, oi5_out = [], [], []
     for d in oi_piv.index:
         row = oi_piv.loc[d]
-        if row.notna().any():
-            sym = row.idxmax()
-            syms_out.append(sym)
-            oi_out.append(row[sym])
-            px_out.append(px_piv.at[d, sym] if sym in px_piv.columns else np.nan)
-        else:
-            syms_out.append(None); oi_out.append(np.nan); px_out.append(np.nan)
+        if not row.notna().any():
+            syms_out.append(None)
+            for lst in (oi_out, px_out, oichg_out, pxchg_out, oi5_out):
+                lst.append(np.nan)
+            continue
+        sym = row.idxmax()
+        has_px = sym in px_piv.columns
+        p1, p0 = (px_piv.at[d, sym], prev_px.at[d, sym]) if has_px else (np.nan, np.nan)
+        syms_out.append(sym)
+        oi_out.append(row[sym])
+        px_out.append(p1)
+        oichg_out.append(row[sym] - prev_oi.at[d, sym])
+        pxchg_out.append((p1 - p0) / p0 * 100 if pd.notna(p0) and p0 else np.nan)
+        oi5_out.append(roll5.at[d, sym])
+
     idx = oi_piv.index
-    return (pd.Series(syms_out, index=idx), pd.Series(oi_out, index=idx, dtype=float),
-            pd.Series(px_out, index=idx, dtype=float))
+    S = lambda v: pd.Series(v, index=idx, dtype=float)
+    return (pd.Series(syms_out, index=idx), S(oi_out), S(px_out),
+            S(oichg_out), S(pxchg_out), S(oi5_out))
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
@@ -499,42 +554,72 @@ def build_spot_oi_data(commodity: str, mtime: float = 0.0) -> dict:
     first so a display-window edge never truncates a change calculation."""
     df_all = load_data(commodity, mtime).sort_values(["ice_symbol", "Date"])
     today = pd.Timestamp(date.today())
-    ltd_map = df_all.groupby("ice_symbol")["LTD"].first()
-    # Only currently-unexpired contract months — matches _split_contracts'
-    # convention elsewhere in this file. Restricting up front (rather than
-    # showing every contract ever traded) keeps the column set to the
-    # handful of months actually relevant right now.
-    syms = ltd_map[ltd_map >= today].sort_values().index.tolist()
+    ltd_map = df_all.groupby("ice_symbol")["LTD"].first().sort_values()
+    # The pivots span EVERY contract ever traded, not just the ones still
+    # unexpired today. Restricting the column set up front made "Total" mean
+    # "OI of the months that happen to still be alive today" at every past
+    # date: on KC at 2026-06-11 that understated true board OI by 15.2%,
+    # because KCN6 had since expired and was dropped from the whole history.
+    # It also let a past date's real spot month vanish, silently promoting
+    # the 2nd or 3rd month to "spot". Columns actually SHOWN are narrowed
+    # per view (_syms_in_window / _syms_on) — the aggregates stay whole.
+    all_syms  = ltd_map.index.tolist()                       # LTD-ascending
+    live_syms = ltd_map[ltd_map >= today].index.tolist()     # tradeable today
 
-    oi_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last").reindex(columns=syms)
-    px_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="settlement", aggfunc="last").reindex(columns=syms)
+    oi_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last").reindex(columns=all_syms)
+    px_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="settlement", aggfunc="last").reindex(columns=all_syms)
 
     total_oi = oi_piv.sum(axis=1, min_count=1)
-    spot_sym, spot_oi, spot_price = _spot_series(oi_piv, px_piv)
+    spot_sym, spot_oi, spot_price, spot_oi_chg, price_chg_pct, spot_oi_5d = _spot_series(oi_piv, px_piv)
     non_spot_oi = total_oi - spot_oi
 
     return dict(
-        syms=syms, oi_piv=oi_piv, px_piv=px_piv, total_oi=total_oi,
+        syms=live_syms, all_syms=all_syms, ltd_map=ltd_map,
+        oi_piv=oi_piv, px_piv=px_piv, total_oi=total_oi,
         spot_sym=spot_sym, spot_oi=spot_oi, spot_price=spot_price, non_spot_oi=non_spot_oi,
-        oi_chg=total_oi.diff(), spot_oi_chg=spot_oi.diff(), spot_oi_5d=spot_oi.rolling(5).mean(),
-        price_chg_pct=spot_price.pct_change() * 100,
+        oi_chg=total_oi.diff(), spot_oi_chg=spot_oi_chg, spot_oi_5d=spot_oi_5d,
+        price_chg_pct=price_chg_pct,
         per_contract_chg=oi_piv.diff(),
     )
 
 
+def _syms_in_window(data: dict, dates) -> list:
+    """Contract months carrying OI anywhere in the displayed window, expiry-
+    ascending — the same rule the Comprehensive Grid uses, so the two tabs
+    agree. Includes months that expired mid-window, which is exactly what
+    keeps the earlier rows' Total honest."""
+    live = data["oi_piv"].loc[list(dates)].notna().any(axis=0)
+    return [s for s in data["all_syms"] if live.get(s, False)]
+
+
+def _syms_on(data: dict, snapshot_date) -> list:
+    """Contract months with OI on one specific date, expiry-ascending — used
+    by the snapshot (term-structure / matrix) views so a historical snapshot
+    shows the curve as it actually stood then, not today's listed months."""
+    row = data["oi_piv"].loc[snapshot_date].notna()
+    return [s for s in data["all_syms"] if row.get(s, False)]
+
+
 def build_spot_summary_html(data: dict) -> str:
     """LAST (today's raw OI) + the day-over-day and since-last-COT deltas,
-    then the last two confirmed COT Tuesdays with their own week-over-week
-    deltas — 'confirmed' meaning strictly before the latest date, since
-    the current week's Tuesday COT report isn't published until Friday
-    even if today happens to be that Tuesday."""
-    syms = data["syms"]; oi_piv = data["oi_piv"]; total_oi = data["total_oi"]; spot_price = data["spot_price"]
-    dates = list(oi_piv.index)
+    then the last two CONFIRMED COT Tuesdays with their own week-over-week
+    deltas. 'Confirmed' means the Friday release has actually happened: a
+    Tuesday's COT publishes the Friday of that same week, so it only counts
+    once the data runs to Tuesday+3 days. The old test was just
+    `d < max_date`, which labelled yesterday's Tuesday as "Last COT" on a
+    Wednesday — two days before that report exists."""
+    oi_piv = data["oi_piv"]; total_oi = data["total_oi"]; spot_price = data["spot_price"]
+    dates = list(oi_piv.index[oi_piv.notna().any(axis=1)])
     if not dates:
         return "<p>No data.</p>"
     max_date = dates[-1]
     prev_day = dates[-2] if len(dates) >= 2 else None
-    tuesdays = [d for d in dates if pd.Timestamp(d).weekday() == 1 and d < max_date]
+    # Columns: months carrying OI over the span this table actually quotes.
+    syms = _syms_in_window(data, dates[-30:])
+    _COT_RELEASE_LAG = pd.Timedelta(days=3)   # Tue snapshot -> Fri publication
+    tuesdays = [d for d in dates
+                if pd.Timestamp(d).weekday() == 1
+                and pd.Timestamp(max_date) >= pd.Timestamp(d) + _COT_RELEASE_LAG]
     last_cot  = tuesdays[-1] if len(tuesdays) >= 1 else None
     prev_cot  = tuesdays[-2] if len(tuesdays) >= 2 else None
     prev_cot2 = tuesdays[-3] if len(tuesdays) >= 3 else None
@@ -608,9 +693,13 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
                                 price_source: str = "Spot (Most OI)", mtime: float = 0.0):
     """Daily grid: per-contract OI, Total, Price (spot by default — see
     price_source), day OI/Spot-OI changes, Non-Spot OI, a user-picked
-    calendar-spread, and the spot month's 5-trading-day OI change."""
+    calendar-spread, and the spot month's trailing 5-session mean OI.
+
+    Contract columns cover every month with OI in the window, including any
+    that expired mid-window — so Total is the real board figure on every
+    row and matches the Comprehensive Grid tab."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
     total_oi = data["total_oi"]
     oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
     spot_oi_5d = data["spot_oi_5d"]
@@ -620,7 +709,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         # doesn't switch contracts as OI leadership rolls from one month
         # to the next, useful for tracking one specific expiry's own price.
         spot_price = px_piv[price_source]
-        price_chg_pct = spot_price.pct_change() * 100
+        price_chg_pct = spot_price.pct_change(fill_method=None) * 100
     else:
         spot_price = data["spot_price"]; price_chg_pct = data["price_chg_pct"]
 
@@ -628,15 +717,16 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         return None
     max_date = oi_piv.index.max()
     cutoff = max_date - pd.Timedelta(days=table_lookback)
-    dates = [d for d in oi_piv.index if d >= cutoff]
+    has_oi = oi_piv.notna().any(axis=1)
+    dates = [d for d in oi_piv.index if d >= cutoff and has_oi.at[d]]
     if not dates:
         return None
     dates_desc = sorted(dates, reverse=True)
+    syms = _syms_in_window(data, dates)
 
-    have_spread = leg1 in px_piv.columns and leg2 in px_piv.columns
+    have_spread = leg1 != leg2 and leg1 in px_piv.columns and leg2 in px_piv.columns
     spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
-    root_len = len(commodity)
-    spread_label = f"{leg1}-{leg2[root_len:]}" if have_spread else "Spread"
+    spread_label = f"{leg1}-{_leg_suffix(leg2)}" if have_spread else "Spread"
 
     oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
 
@@ -679,9 +769,11 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
             price_chg_pct.get(d), oi_chg.get(d), spot_oi_chg.get(d),
             spread.get(d) if have_spread else np.nan, spot_oi_5d.get(d),
         )
-        # Non Spot Chg = Total OI change minus Spot OI change — algebraically
-        # the same as diffing the Non-Spot level directly, since
-        # Non Spot = Total - Spot.
+        # Non Spot Chg = Total OI change minus the spot month's OWN OI change.
+        # Since spot_oi_chg now holds the day's spot contract fixed across
+        # both sessions, this is exactly d(Total - that contract) — "the flow
+        # in everything except the front month". Diffing a stitched Non-Spot
+        # level instead would post a spurious jump on every roll day.
         non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
@@ -704,16 +796,18 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
     aggregate) — each column scaled to its own range, since a front month's
     change dwarfs a far month's."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; per_chg = data["per_contract_chg"]
+    per_chg = data["per_contract_chg"]
 
     if per_chg.empty:
         return None
     max_date = per_chg.index.max()
     cutoff = max_date - pd.Timedelta(days=table_lookback)
-    dates = [d for d in per_chg.index if d >= cutoff]
+    has_oi = data["oi_piv"].notna().any(axis=1)
+    dates = [d for d in per_chg.index if d >= cutoff and has_oi.at[d]]
     if not dates:
         return None
     dates_desc = sorted(dates, reverse=True)
+    syms = _syms_in_window(data, dates)
     col_vmax = per_chg.loc[dates].abs().max()
 
     css = f"""<style>
@@ -767,9 +861,8 @@ def build_oi_spread_chart(commodity: str, table_lookback: int, oi_choice: str, l
         oi_series = oi_piv[oi_choice].reindex(dates) if oi_choice in oi_piv.columns else pd.Series(dtype=float)
         oi_name = f"{oi_choice} OI"
 
-    have_spread = leg1 in px_piv.columns and leg2 in px_piv.columns
-    root_len = len(commodity)
-    spread_name = f"{leg1}-{leg2[root_len:]} Spread" if have_spread else "Spread"
+    have_spread = leg1 != leg2 and leg1 in px_piv.columns and leg2 in px_piv.columns
+    spread_name = f"{leg1}-{_leg_suffix(leg2)} Spread" if have_spread else "Spread"
     spread_series = (px_piv[leg1] - px_piv[leg2]).reindex(dates) if have_spread else pd.Series(dtype=float)
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -795,8 +888,14 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
     An optional second, older date overlays as a lighter bar + dashed line,
     so the curve's shape today can be compared against how it looked then."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
-    if not syms or snapshot_date not in oi_piv.index:
+    oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    if snapshot_date not in oi_piv.index:
+        return None
+    # Months listed on the snapshot date itself — a date from before a roll
+    # should draw the curve that existed then, front month included, rather
+    # than only the months still unexpired today.
+    syms = _syms_on(data, snapshot_date)
+    if not syms:
         return None
     oi_row = oi_piv.loc[snapshot_date]
     px_row = px_piv.loc[snapshot_date]
@@ -848,12 +947,14 @@ def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
     curve is steepest/most inverted AND how liquid that leg is, at a glance
     (vs. the OI-vs-Spread chart's single user-picked pair)."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
-    if len(syms) < 2 or snapshot_date not in px_piv.index:
+    px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
+    if snapshot_date not in px_piv.index:
+        return None
+    syms = _syms_on(data, snapshot_date)
+    if len(syms) < 2:
         return None
     px_row = px_piv.loc[snapshot_date]
     oi_row = oi_piv.loc[snapshot_date]
-    root_len = len(commodity)
     pairs, spreads, min_ois = [], [], []
     for i in range(len(syms) - 1):
         s1, s2 = syms[i], syms[i + 1]
@@ -861,7 +962,7 @@ def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
         if pd.isna(p1) or pd.isna(p2):
             continue
         o1, o2 = oi_row.get(s1, 0), oi_row.get(s2, 0)
-        pairs.append(f"{s1}-{s2[root_len:]}")
+        pairs.append(f"{s1}-{_leg_suffix(s2)}")
         spreads.append(p1 - p2)
         min_ois.append(min(o1, o2))
     if not pairs:
@@ -905,7 +1006,7 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
         name = "Spot"
     elif contract_choice in oi_piv.columns:
         oi_chg_s = oi_piv[contract_choice].diff().reindex(dates)
-        px_chg_s = (px_piv[contract_choice].pct_change() * 100).reindex(dates)
+        px_chg_s = (px_piv[contract_choice].pct_change(fill_method=None) * 100).reindex(dates)
         name = contract_choice
     else:
         return None
@@ -968,8 +1069,11 @@ def build_min_oi_matrix_html(commodity: str, snapshot_date, mtime: float = 0.0):
     spread is only as tradeable as its thinner leg. White-to-green
     heatmap: deeper green = more size actually tradeable."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
-    if len(syms) < 2 or snapshot_date not in px_piv.index:
+    px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
+    if snapshot_date not in px_piv.index:
+        return None
+    syms = _syms_on(data, snapshot_date)
+    if len(syms) < 2:
         return None
     pairs = _spread_pairs(syms, px_piv.loc[snapshot_date], oi_piv.loc[snapshot_date])
     oi_vals = [v[1] for v in pairs.values() if v[1] is not None]
@@ -999,8 +1103,11 @@ def build_price_spread_matrix_html(commodity: str, snapshot_date, mtime: float =
     """The price spread itself for every calendar-spread combination, as an
     Excel-style diverging data bar."""
     data = build_spot_oi_data(commodity, mtime)
-    syms = data["syms"]; px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
-    if len(syms) < 2 or snapshot_date not in px_piv.index:
+    px_piv = data["px_piv"]; oi_piv = data["oi_piv"]
+    if snapshot_date not in px_piv.index:
+        return None
+    syms = _syms_on(data, snapshot_date)
+    if len(syms) < 2:
         return None
     pairs = _spread_pairs(syms, px_piv.loc[snapshot_date], oi_piv.loc[snapshot_date])
     vmax = max((abs(v[0]) for v in pairs.values()), default=1.0) or 1.0
@@ -1076,6 +1183,12 @@ with st.sidebar:
     st.markdown("---")
     show_individual = st.toggle("Show individual years", value=False)
 
+    # Drives volume charts that now sit in two different Volume subtabs, so it
+    # cannot live inside either one of them.
+    roll_n = st.slider("Rolling Volume Window (days)", min_value=1, max_value=30,
+                       value=10, step=1,
+                       help="Applied to daily volume before plotting")
+
     st.markdown("---")
     render_data_freshness(st.sidebar)
 
@@ -1090,10 +1203,32 @@ st.markdown("""
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_oi, tab_spot, tab_spot_charts, tab_spreads, tab_vol, tab_flow, tab_grid = st.tabs(
-    ["OI Progression", "All Futures OI Recap", "All Futures OI Charts", "Spreads",
-     "Volume", "OI & Volume Flow", "Comprehensive Grid"]
-)
+# Grouped by metric at the top level (Open Interest / Volume / both), then by
+# scope inside: Progression is one contract against its own history on a
+# days-to-expiry axis, Board is every contract on a calendar axis. The seven
+# flat tabs this replaces cut across both axes - "Volume" held single-contract
+# and whole-board views together, while Recap and Charts were the same scope
+# split only by table-vs-chart.
+tab_OI, tab_VOL, tab_BOTH = st.tabs(["Open Interest", "Volume", "OI & Volume"])
+
+with tab_OI:
+    _oi_prog, _oi_board, _oi_spread, _oi_charts = st.tabs(
+        ["Progression", "Board", "Spread OI", "Charts"])
+with tab_VOL:
+    _vol_prog, _vol_board = st.tabs(["Progression", "Board"])
+with tab_BOTH:
+    _both_flow, _both_grid = st.tabs(["Flow", "Grid"])
+
+# Aliases: the bodies further down still say `with tab_oi:` etc., so this stays
+# a layout move rather than a rewrite of the views.
+tab_oi          = _oi_prog
+tab_spot        = _oi_board
+tab_spreads     = _oi_spread
+tab_spot_charts = _oi_charts
+tab_vol         = _vol_prog
+tab_vol_board   = _vol_board
+tab_flow        = _both_flow
+tab_grid        = _both_grid
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1105,7 +1240,7 @@ with tab_oi:
         st.error("No data available.")
         st.stop()
 
-    band, curr_df, _, _ = res
+    band = res[0]
     curr_df = df_month[df_month["ice_symbol"] == current_contract].sort_values("Date").copy()
 
     latest     = curr_df.iloc[-1]
@@ -1225,7 +1360,7 @@ with tab_oi:
 
     res_sh = compute_band(commodity, selected_month, hist_range, "oi_share_pct", use_enriched=True, mtime=mt)
     if res_sh:
-        b_sh, _, _, _ = res_sh
+        b_sh = res_sh[0]
         df_enr  = load_enriched(commodity, mt)
         c_sh    = df_enr[df_enr["ice_symbol"] == current_contract].sort_values("Date").copy()
         lat_sh  = c_sh.iloc[-1]
@@ -1263,11 +1398,6 @@ with tab_vol:
     st.markdown(f"### {current_contract}  |  Volume Analysis")
     st.markdown("---")
 
-    # Rolling window selector
-    roll_n = st.slider("Rolling Window (days)", min_value=1, max_value=30,
-                       value=10, step=1,
-                       help="Applied to daily volume before plotting progression")
-
     month_name = MONTH_NAMES.get(selected_month, selected_month)
     df_enr     = load_enriched(commodity, mt)
     df_enr_m   = df_enr[df_enr["month"] == selected_month].copy()
@@ -1278,7 +1408,7 @@ with tab_vol:
 
     res_vs = compute_band(commodity, selected_month, hist_range, "vol_share_pct", use_enriched=True, mtime=mt)
     if res_vs:
-        b_vs, _, _, _ = res_vs
+        b_vs = res_vs[0]
         c_vs  = df_enr[df_enr["ice_symbol"] == current_contract].sort_values("Date").copy()
         lat   = c_vs.iloc[-1]
         v_now = lat["vol_share_pct"]
@@ -1309,7 +1439,7 @@ with tab_vol:
     res_rv = compute_band(commodity, selected_month, hist_range,
                           metric_col="volume", roll_n=roll_n, mtime=mt)
     if res_rv:
-        b_rv, c_rv_base, _, _ = res_rv
+        b_rv = res_rv[0]
 
         # Compute rolling vol for current contract
         c_rv = df_enr[df_enr["ice_symbol"] == current_contract].sort_values("Date").copy()
@@ -1321,11 +1451,14 @@ with tab_vol:
         idx_  = (b_rv["days_to_expiry"] - d_now).abs().idxmin()
         avg_  = b_rv.loc[idx_, "hist_mean"]
 
+        # Guarded like the OI KPI in Tab 1: a historical mean of 0 (a contract
+        # that simply did not trade around this DTE) otherwise renders "inf%".
+        rv_delta = f"{(v_now-avg_)/avg_*100:+.1f}%" if pd.notna(avg_) and avg_ > 0 else None
         kpi_row([
             ("Contract",          current_contract),
             (f"{roll_n}d Avg Vol", f"{v_now:,.0f}"),
             ("As of",             lat["Date"].strftime("%b %d, %Y")),
-            ("vs Hist Mean",      f"{avg_:,.0f}", f"{(v_now-avg_)/avg_*100:+.1f}%"),
+            ("vs Hist Mean",      f"{avg_:,.0f}", rv_delta),
         ])
 
         fig_rv = build_chart(b_rv, c_rv, "_metric", current_contract,
@@ -1336,9 +1469,12 @@ with tab_vol:
             dte_range=dte_range, dte_now=d_now, height=460)
         st.plotly_chart(fig_rv, use_container_width=True)
 
-    st.markdown("---")
 
-    # ── Chart: All Active Contracts — Rolling Volume (overlaid lines) ────────
+# ==============================================================================
+# VOLUME - BOARD (every contract, calendar axis)
+# ==============================================================================
+with tab_vol_board:
+    st.markdown(f"### {COMMODITIES[commodity][1]}  |  Volume by Contract")
     st.markdown(f"#### All Contracts — Rolling {roll_n}-Day Volume")
     st.caption("Rolling volume for every contract that traded within the lookback window "
                "(includes contracts that have since expired, so historical totals stay accurate).")
@@ -1487,7 +1623,6 @@ with tab_flow:
         latest_flow   = flow_win.iloc[-1]
         latest_change = latest_flow["oi_change"]
         latest_vol    = latest_flow["volume"]
-        turnover      = (latest_vol / abs(latest_change)) if latest_change else float("nan")
 
         kpi_row([
             ("Contract",        current_contract),
