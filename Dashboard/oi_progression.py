@@ -1533,8 +1533,10 @@ def _view_vol_board():
 
     df_vol_all = load_data(commodity, mt)
 
-    lookback = st.slider("Lookback (calendar days)", 30, 365, 120, step=10,
-                         key="vol_all_lookback")
+    _lb_col, _ = st.columns([1, 5])
+    with _lb_col:
+        lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=365,
+                                   value=120, step=10, key="vol_all_lookback")
     cutoff = df_vol_all["Date"].max() - pd.Timedelta(days=lookback)
 
     # Any symbol that traded in the window — not just ones still unexpired today,
@@ -1660,8 +1662,10 @@ def _view_flow():
     month_name = MONTH_NAMES.get(selected_month, selected_month)
     st.markdown(f"### {current_contract}  |  Daily OI Change vs Volume")
 
-    flow_lookback = st.slider("Lookback (calendar days)", 30, 365, 120, step=10,
-                              key="flow_lookback")
+    _lb_col, _ = st.columns([1, 5])
+    with _lb_col:
+        flow_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=365,
+                                        value=120, step=10, key="flow_lookback")
 
     curr_flow = df_month[df_month["ice_symbol"] == current_contract].sort_values("Date").copy()
     curr_flow["oi_change"] = curr_flow["open_interest"].diff()
@@ -1843,8 +1847,10 @@ def _view_flow():
 @st.fragment
 def _view_grid():
     st.markdown(f"### {COMMODITIES[commodity][1]}  |  Daily OI & Volume by Contract Month")
-    table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
-                               key="oi_table_lookback")
+    _lb_col, _ = st.columns([1, 5])
+    with _lb_col:
+        table_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=365,
+                                         value=90, step=10, key="oi_table_lookback")
     html = build_oi_vol_table_html(commodity, table_lookback, mt)
     if html is None:
         st.info("No data in this window.")
@@ -2064,7 +2070,7 @@ def _view_spreads():
 # ── Section nav — dispatch ───────────────────────────────────────────────────
 NAV_GROUPS = {
     "Open Interest": {"Progression": _view_oi, "All Futures OI": _view_spot,
-                      "Spread OI": _view_spreads, "Charts": _view_spot_charts},
+                      "Spread OI": _view_spreads, "Spot OI vs Spread": _view_spot_charts},
     "Volume":        {"Progression": _view_vol, "Board": _view_vol_board},
     "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
 }
