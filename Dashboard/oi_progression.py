@@ -634,24 +634,35 @@ def build_spot_summary_html(data: dict) -> str:
         p1, p0 = px(d1), px(d0)
         return (p1 - p0) / p0 * 100 if (d1 is not None and d0 is not None and p0) else np.nan
 
-    css = """<style>
-      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}
-      table.spotsum{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotsum th,table.spotsum td{padding:2px 6px;text-align:center;border-bottom:1px solid #f0f0f0}
-      table.spotsum th{position:sticky;top:0;background:#fafafa;color:#1a1a1a;font-weight:600;
-        font-size:.58rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #d1d5db}
-      table.spotsum td.lbl{text-align:left;font-weight:600;color:#1d1d1f}
-      table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.62rem}
-      table.spotsum tr.spacer td{padding:3px 0;border:none}
-      table.spotsum td.tot{font-weight:700;background:#fafafa}
-      table.spotsum tr.tue-row{background:#eceef1}
+    css = f"""<style>
+      .spotsum-wrap{{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}}
+      table.spotsum{{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}}
+      table.spotsum th,table.spotsum td{{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}}
+      table.spotsum th{{position:sticky;top:0;background:#0a2463;color:#fff;font-weight:600;
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}}
+      table.spotsum td.lbl{{text-align:left;font-weight:600;color:#1d1d1f;min-width:{_DATECOL_W}px}}
+      table.spotsum td.ccol{{min-width:{_CCOL_W}px}}
+      table.spotsum tr.delta td.lbl{{font-weight:400;color:#9ca3af;font-size:.62rem}}
+      table.spotsum tr.spacer td{{padding:2px 0;border:none}}
+      table.spotsum td.tot{{font-weight:700;background:#fafafa}}
+      table.spotsum tr.tue-row{{background:#eceef1}}
+      table.spotsum tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
+
+    # Shared scale across every delta row/column so the bars stay comparable
+    # to each other — a per-row max would make a quiet day's bar look as
+    # "full" as the heaviest week's.
+    all_deltas = []
+    for d1, d0 in [(max_date, prev_day), (max_date, last_cot), (last_cot, prev_cot), (prev_cot, prev_cot2)]:
+        if d1 is not None and d0 is not None:
+            all_deltas.append((oi_row(d1) - oi_row(d0)).abs())
+    delta_vmax = _safe(pd.concat(all_deltas).max()) if all_deltas else 1.0
 
     def value_row(label, d):
         if d is None:
             return ""
         tr_cls = " class='tue-row'" if pd.Timestamp(d).weekday() == 1 else ""
-        cells = "".join(f"<td>{_fmt_num(oi_row(d).get(s))}</td>" for s in syms)
+        cells = "".join(f"<td class='ccol'>{_fmt_num(oi_row(d).get(s))}</td>" for s in syms)
         px_txt = f"{px(d):.2f}" if pd.notna(px(d)) else ""
         return (f"<tr{tr_cls}><td class='lbl'>{label}</td>{cells}"
                 f"<td class='tot'>{_fmt_num(total_oi.get(d))}</td><td>{px_txt}</td></tr>")
@@ -661,19 +672,19 @@ def build_spot_summary_html(data: dict) -> str:
             return ""
         delta = oi_row(d1) - oi_row(d0)
         cells = "".join(
-            f"<td style='{_flat_tint(delta.get(s))};color:{_sign_color(delta.get(s))};font-weight:600'>"
+            f"<td class='ccol' style='{_oi_chg_style(delta.get(s), delta_vmax)};color:{_sign_color(delta.get(s))};font-weight:600'>"
             f"{_fmt_num(delta.get(s), True)}</td>" for s in syms
         )
         tot_delta = total_oi.get(d1) - total_oi.get(d0)
         px_pct = px_chg_pct(d1, d0)
         return (
             f"<tr class='delta'><td class='lbl'>{label}</td>{cells}"
-            f"<td class='tot' style='color:{_sign_color(tot_delta)}'>{_fmt_num(tot_delta, True)}</td>"
-            f"<td style='color:{_sign_color(px_pct)}'>{_fmt_pct(px_pct)}</td></tr>"
+            f"<td class='tot' style='{_oi_chg_style(tot_delta, delta_vmax)};color:{_sign_color(tot_delta)}'>{_fmt_num(tot_delta, True)}</td>"
+            f"<td style='{_flat_tint(px_pct)};color:{_sign_color(px_pct)}'>{_fmt_pct(px_pct)}</td></tr>"
         )
 
     spacer = f"<tr class='spacer'><td colspan='{len(syms) + 3}'></td></tr>"
-    header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th>{s}</th>" for s in syms) + "<th>Total</th><th>Price</th></tr>"
+    header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) + "<th>Total</th><th>Price</th></tr>"
     body = (
         value_row(pd.Timestamp(max_date).strftime("%d/%m/%Y"), max_date)
         + delta_row("+/- day", max_date, prev_day)
@@ -693,7 +704,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
                                 price_source: str = "Spot (Most OI)", mtime: float = 0.0):
     """Daily grid: per-contract OI, Total, Price (spot by default — see
     price_source), day OI/Spot-OI changes, Non-Spot OI, a user-picked
-    calendar-spread, and the spot month's trailing 5-session mean OI.
+    calendar-spread, and the trailing 5-session mean of the daily OI Chg (Total).
 
     Contract columns cover every month with OI in the window, including any
     that expired mid-window — so Total is the real board figure on every
@@ -702,7 +713,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
     total_oi = data["total_oi"]
     oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
-    spot_oi_5d = data["spot_oi_5d"]
+    oi_chg_5d = oi_chg.rolling(5).mean()
 
     if price_source != "Spot (Most OI)" and price_source in px_piv.columns:
         # A fixed, single contract's price throughout — unlike Spot, this
@@ -722,7 +733,11 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     if not dates:
         return None
     dates_desc = sorted(dates, reverse=True)
-    syms = _syms_in_window(data, dates)
+    # Only currently-live (unexpired) contract months as columns — a month
+    # that has since expired mid-window still counts in Total/OI Chg (those
+    # come from the full oi_piv regardless of which columns are shown), it
+    # just no longer gets its own column here.
+    syms = [s for s in _syms_in_window(data, dates) if s in data["syms"]]
 
     have_spread = leg1 != leg2 and leg1 in px_piv.columns and leg2 in px_piv.columns
     spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
@@ -754,7 +769,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
               f"<th class='tot-cell'>Total</th><th>{price_label}</th><th>+/-</th>"
               "<th>OI Chg</th><th>Spot OI +/-</th><th>Non Spot Chg</th><th>Date</th>"
-              f"<th>{spread_label}</th><th>Spot OI 5d Avg</th></tr>")
+              f"<th>{spread_label}</th><th>OI Chg 5d Avg</th></tr>")
 
     rows = []
     for d in dates_desc:
@@ -765,9 +780,9 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
             v = oi_piv.at[d, s] if s in oi_piv.columns else np.nan
             cells += f"<td class='ccol'>{_fmt_num(v)}</td>"
         px_v = spot_price.get(d)
-        px_pct_v, oi_chg_v, spot_chg_v, spread_v, spot5d_v = (
+        px_pct_v, oi_chg_v, spot_chg_v, spread_v, oichg5d_v = (
             price_chg_pct.get(d), oi_chg.get(d), spot_oi_chg.get(d),
-            spread.get(d) if have_spread else np.nan, spot_oi_5d.get(d),
+            spread.get(d) if have_spread else np.nan, oi_chg_5d.get(d),
         )
         # Non Spot Chg = Total OI change minus the spot month's OWN OI change.
         # Since spot_oi_chg now holds the day's spot contract fixed across
@@ -784,7 +799,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         cells += f"<td style='color:#9ca3af'>{d_str}</td>"
         cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
                   if pd.notna(spread_v) else "<td></td>")
-        cells += f"<td>{_fmt_num(spot5d_v)}</td>"
+        cells += f"<td style='{_oi_chg_style(oichg5d_v, oi_chg_vmax)};color:{_sign_color(oichg5d_v)}'>{_fmt_num(oichg5d_v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -1202,39 +1217,60 @@ st.markdown("""
 </style>""", unsafe_allow_html=True)
 
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-# Grouped by metric at the top level (Open Interest / Volume / both), then by
-# scope inside: Progression is one contract against its own history on a
-# days-to-expiry axis, Board is every contract on a calendar axis. The seven
-# flat tabs this replaces cut across both axes - "Volume" held single-contract
-# and whole-board views together, while Recap and Charts were the same scope
-# split only by table-vs-chart.
-tab_OI, tab_VOL, tab_BOTH = st.tabs(["Open Interest", "Volume", "OI & Volume"])
+# ── Section nav — same button-pill / underline-tab treatment as the COT
+# Comprehensive dashboard: a top pill row picks the metric group (Open
+# Interest / Volume / OI & Volume), a second underline row picks the scope
+# within it. Only the selected (group, view) body actually runs each rerun —
+# st.tabs used to build all 8 panes on every sidebar change and just hide
+# the rest. Grouped by metric at the top level, then by scope inside:
+# Progression is one contract against its own history on a days-to-expiry
+# axis, Board is every contract on a calendar axis.
+_NAV_ACCENT = C["oi_avg"]
+st.markdown(f"""<style>
+  .st-key-nav_section [data-testid="stButtonGroup"] > div {{
+    display:inline-flex; gap:4px; padding:4px; background:#f1f3f7;
+    border:1px solid #e3e7ee; border-radius:999px;
+  }}
+  .st-key-nav_section button[kind^="segmented_control"] {{
+    border:none !important; border-radius:999px !important; margin:0 !important;
+    padding:.35rem 1.25rem !important; min-height:0 !important;
+    background:transparent !important; box-shadow:none !important;
+    transition:background .15s ease, color .15s ease;
+  }}
+  .st-key-nav_section button[kind^="segmented_control"] p {{
+    font-size:.84rem !important; font-weight:600 !important; letter-spacing:.02em;
+    color:#5b6472 !important;
+  }}
+  .st-key-nav_section button[kind="segmented_control"]:hover {{ background:#e6e9f0 !important; }}
+  .st-key-nav_section button[kind="segmented_controlActive"] {{
+    background:{_NAV_ACCENT} !important; box-shadow:0 1px 3px rgba(0,0,0,.18) !important;
+  }}
+  .st-key-nav_section button[kind="segmented_controlActive"] p {{ color:#ffffff !important; }}
 
-with tab_OI:
-    _oi_prog, _oi_board, _oi_spread, _oi_charts = st.tabs(
-        ["Progression", "Board", "Spread OI", "Charts"])
-with tab_VOL:
-    _vol_prog, _vol_board = st.tabs(["Progression", "Board"])
-with tab_BOTH:
-    _both_flow, _both_grid = st.tabs(["Flow", "Grid"])
-
-# Aliases: the bodies further down still say `with tab_oi:` etc., so this stays
-# a layout move rather than a rewrite of the views.
-tab_oi          = _oi_prog
-tab_spot        = _oi_board
-tab_spreads     = _oi_spread
-tab_spot_charts = _oi_charts
-tab_vol         = _vol_prog
-tab_vol_board   = _vol_board
-tab_flow        = _both_flow
-tab_grid        = _both_grid
+  .st-key-nav_view {{ margin-top:-.35rem; border-bottom:1px solid #e3e7ee; gap:0; }}
+  .st-key-nav_view [data-testid="stButtonGroup"] > div {{ gap:2px; flex-wrap:wrap; }}
+  .st-key-nav_view button[kind^="segmented_control"] {{
+    border:none !important; border-radius:6px 6px 0 0 !important; margin:0 0 -1px 0 !important;
+    padding:.45rem .9rem !important; min-height:0 !important;
+    background:transparent !important; box-shadow:none !important;
+    border-bottom:2px solid transparent !important;
+    transition:color .15s ease, border-color .15s ease, background .15s ease;
+  }}
+  .st-key-nav_view button[kind^="segmented_control"] p {{
+    font-size:.81rem !important; font-weight:500 !important; color:#6b7280 !important;
+  }}
+  .st-key-nav_view button[kind="segmented_control"]:hover {{ background:#f5f6f9 !important; }}
+  .st-key-nav_view button[kind="segmented_control"]:hover p {{ color:#1f2937 !important; }}
+  .st-key-nav_view button[kind="segmented_controlActive"] {{ border-bottom:2px solid {_NAV_ACCENT} !important; }}
+  .st-key-nav_view button[kind="segmented_controlActive"] p {{ color:{_NAV_ACCENT} !important; font-weight:600 !important; }}
+</style>""", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — OI PROGRESSION
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_oi:
+@st.fragment
+def _view_oi():
     res = compute_band(commodity, selected_month, hist_range, "open_interest", mtime=mt)
     if res is None:
         st.error("No data available.")
@@ -1394,7 +1430,8 @@ with tab_oi:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — VOLUME
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_vol:
+@st.fragment
+def _view_vol():
     st.markdown(f"### {current_contract}  |  Volume Analysis")
     st.markdown("---")
 
@@ -1473,7 +1510,8 @@ with tab_vol:
 # ==============================================================================
 # VOLUME - BOARD (every contract, calendar axis)
 # ==============================================================================
-with tab_vol_board:
+@st.fragment
+def _view_vol_board():
     st.markdown(f"### {COMMODITIES[commodity][1]}  |  Volume by Contract")
     st.markdown(f"#### All Contracts — Rolling {roll_n}-Day Volume")
     st.caption("Rolling volume for every contract that traded within the lookback window "
@@ -1603,7 +1641,8 @@ with tab_vol_board:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — OI FLOW (daily OI change vs Volume, same contract as the other tabs)
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_flow:
+@st.fragment
+def _view_flow():
     month_name = MONTH_NAMES.get(selected_month, selected_month)
     st.markdown(f"### {current_contract}  |  Daily OI Change vs Volume")
 
@@ -1787,7 +1826,8 @@ with tab_flow:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — DAILY GRID (OI level / OI change / Volume / Px change, per contract month)
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_grid:
+@st.fragment
+def _view_grid():
     st.markdown(f"### {COMMODITIES[commodity][1]}  |  Daily OI & Volume by Contract Month")
     table_lookback = st.slider("Lookback (calendar days)", 30, 365, 90, step=10,
                                key="oi_table_lookback")
@@ -1997,11 +2037,34 @@ def _render_spreads_tab(commodity: str, mt: float):
             st.markdown(html_price, unsafe_allow_html=True)
 
 
-with tab_spot:
+def _view_spot():
     _render_all_futures_oi_recap(commodity, mt)
 
-with tab_spot_charts:
+def _view_spot_charts():
     _render_all_futures_oi_charts(commodity, mt)
 
-with tab_spreads:
+def _view_spreads():
     _render_spreads_tab(commodity, mt)
+
+
+# ── Section nav — dispatch ───────────────────────────────────────────────────
+NAV_GROUPS = {
+    "Open Interest": {"Progression": _view_oi, "Board": _view_spot,
+                      "Spread OI": _view_spreads, "Charts": _view_spot_charts},
+    "Volume":        {"Progression": _view_vol, "Board": _view_vol_board},
+    "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
+}
+
+with st.container(key="nav_section"):
+    group = st.segmented_control("Section", list(NAV_GROUPS), default="Open Interest",
+                                 key="main_group", label_visibility="collapsed") or "Open Interest"
+group_views = NAV_GROUPS[group]
+# Streamlit drops a widget's state while it isn't rendered, so the other
+# group's last view is remembered in a plain session key and fed back as default.
+_last_key = f"_last_view_{group}"
+_last = st.session_state.get(_last_key, next(iter(group_views)))
+with st.container(key="nav_view"):
+    view = st.segmented_control("View", list(group_views), default=_last,
+                                key=f"main_view_{group}", label_visibility="collapsed") or _last
+st.session_state[_last_key] = view
+group_views[view]()
