@@ -168,6 +168,7 @@ class CommodityConfig:
     month_num: Dict[str, int]
     fnd_rule:  object
     ltd_rule:  Callable
+    horizon_years: int = 2   # how far forward to fetch listed contracts
 
 CONTRACT_CONFIG = {
     "KC": CommodityConfig("KC",  "US", ["H","K","N","U","Z"], {"H":3,"K":5,"N":7,"U":9,"Z":12},
@@ -176,8 +177,10 @@ CONTRACT_CONFIG = {
                            fnd_nth_bd_minus(nth=6, n=10), ltd_last_bd_minus(11)),
     "CT": CommodityConfig("CT",  "US", ["H","K","N","V","Z"], {"H":3,"K":5,"N":7,"V":10,"Z":12},
                            fnd_first_bd_minus(5), ltd_last_bd_minus(17)),
+    # Sugar #11 trades much further out than the other softs — extend the
+    # forward horizon so the board doesn't cut off 3 live contracts early.
     "SB": CommodityConfig("SB",  "US", ["H","K","N","V"], {"H":3,"K":5,"N":7,"V":10},
-                           "after_ltd", ltd_last_bd_preceding_month()),
+                           "after_ltd", ltd_last_bd_preceding_month(), horizon_years=3),
     "RC": CommodityConfig("LRC", "UK", ["F","H","K","N","U","X"], {"F":1,"H":3,"K":5,"N":7,"U":9,"X":11},
                            fnd_first_bd_minus(4), ltd_last_bd_minus(4)),
     "LCC":CommodityConfig("LCC", "UK", ["H","K","N","U","Z"], {"H":3,"K":5,"N":7,"U":9,"Z":12},
@@ -429,7 +432,7 @@ def incremental_targets(comm: str) -> dict | None:
         targets[(month, year)] = (last_known - pd.Timedelta(days=3)).strftime("%Y-%m-%d")
 
     # also pick up any not-yet-first-fetched contract within the forward window
-    end_year = today.year + 2
+    end_year = today.year + cfg.horizon_years
     for year in range(today.year - 1, end_year + 1):
         for month_code in cfg.months:
             key = (month_code, year)
@@ -455,7 +458,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     target_commodities = [c.upper() for c in args.commodities] if args.commodities else COMMODITIES
-    end_year = pd.Timestamp.today().year + 2
+    today_year = pd.Timestamp.today().year
 
     import lseg.data as ld
     ld.open_session()
@@ -472,6 +475,7 @@ if __name__ == "__main__":
             if args.oi_topup_only:
                 topup_open_interest(ld, comm)
                 continue
+            end_year = today_year + CONTRACT_CONFIG[comm].horizon_years
             if args.full:
                 new = build_commodity(ld, comm, START_YEAR, end_year, incremental_from=None)
             else:
