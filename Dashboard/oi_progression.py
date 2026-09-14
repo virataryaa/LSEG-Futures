@@ -474,8 +474,8 @@ def _flat_tint(v) -> str:
 # between the daily grid and the separate "per expiry" table below it — two
 # independent tables won't auto-align on their own since each has a
 # different total column count.
-_CCOL_W = 72
-_DATECOL_W = 96
+_CCOL_W = 54
+_DATECOL_W = 76
 
 
 _CONTRACT_SUFFIX = re.compile(r"^(.*)([FGHJKMNQUVXZ]\d+(?:\^\d+)?)$")
@@ -746,10 +746,10 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
 
     css = f"""<style>
       .spotgrid-wrap{{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}}
-      table.spotgrid{{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}}
-      table.spotgrid th,table.spotgrid td{{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}}
+      table.spotgrid{{border-collapse:collapse;width:auto;font-size:.6rem;font-family:'Inter',sans-serif;white-space:nowrap}}
+      table.spotgrid th,table.spotgrid td{{padding:1px 4px;text-align:center;border-bottom:1px solid #f4f4f5}}
       table.spotgrid th{{position:sticky;top:0;background:#0a2463;color:#fff;font-weight:600;z-index:2;
-        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}}
+        font-size:.54rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}}
       table.spotgrid .date-cell{{position:sticky;left:0;background:#fff;font-weight:600;z-index:1;
         box-shadow:inset -1px 0 0 0 #e5e7eb;min-width:{_DATECOL_W}px}}
       table.spotgrid th.date-cell{{background:#0a2463;color:#fff;z-index:3}}
@@ -2048,7 +2048,7 @@ def _view_spreads():
 
 # ── Section nav — dispatch ───────────────────────────────────────────────────
 NAV_GROUPS = {
-    "Open Interest": {"Progression": _view_oi, "Board": _view_spot,
+    "Open Interest": {"Progression": _view_oi, "All Futures OI": _view_spot,
                       "Spread OI": _view_spreads, "Charts": _view_spot_charts},
     "Volume":        {"Progression": _view_vol, "Board": _view_vol_board},
     "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
