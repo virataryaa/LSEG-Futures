@@ -617,12 +617,11 @@ def _syms_on(data: dict, snapshot_date) -> list:
 
 def build_spot_summary_html(data: dict) -> str:
     """LAST (today's raw OI) + the day-over-day and since-last-COT deltas,
-    then the last two CONFIRMED COT Tuesdays with their own week-over-week
-    deltas. 'Confirmed' means the Friday release has actually happened: a
-    Tuesday's COT publishes the Friday of that same week, so it only counts
-    once the data runs to Tuesday+3 days. The old test was just
-    `d < max_date`, which labelled yesterday's Tuesday as "Last COT" on a
-    Wednesday — two days before that report exists."""
+    then the last two COT Tuesdays (the session itself, not the Friday
+    report) with their own week-over-week deltas. This table only tracks
+    OI on Tuesday sessions — it doesn't read the published COT report — so
+    the most recent Tuesday with OI data is used as soon as it's in, with
+    no wait for Friday's release."""
     oi_piv = data["oi_piv"]; total_oi = data["total_oi"]; spot_price = data["spot_price"]
     dates = list(oi_piv.index[oi_piv.notna().any(axis=1)])
     if not dates:
@@ -631,10 +630,7 @@ def build_spot_summary_html(data: dict) -> str:
     prev_day = dates[-2] if len(dates) >= 2 else None
     # Columns: months carrying OI over the span this table actually quotes.
     syms = _syms_in_window(data, dates[-30:])
-    _COT_RELEASE_LAG = pd.Timedelta(days=3)   # Tue snapshot -> Fri publication
-    tuesdays = [d for d in dates
-                if pd.Timestamp(d).weekday() == 1
-                and pd.Timestamp(max_date) >= pd.Timestamp(d) + _COT_RELEASE_LAG]
+    tuesdays = [d for d in dates if pd.Timestamp(d).weekday() == 1]
     last_cot  = tuesdays[-1] if len(tuesdays) >= 1 else None
     prev_cot  = tuesdays[-2] if len(tuesdays) >= 2 else None
     prev_cot2 = tuesdays[-3] if len(tuesdays) >= 3 else None
