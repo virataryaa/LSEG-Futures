@@ -2054,16 +2054,32 @@ NAV_GROUPS = {
     "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
 }
 
+# A relabelled tab (e.g. "Board" -> "All Futures OI") leaves a stale value in
+# a returning browser session's state — both the widget's own key and the
+# plain "_last_view" fallback key persist across reruns/redeploys, and
+# segmented_control errors if `default`/its stored value isn't in `options`
+# any more. Drop anything that no longer matches before the widgets render.
+if st.session_state.get("main_group") not in (None, *NAV_GROUPS):
+    del st.session_state["main_group"]
+
 with st.container(key="nav_section"):
     group = st.segmented_control("Section", list(NAV_GROUPS), default="Open Interest",
                                  key="main_group", label_visibility="collapsed") or "Open Interest"
 group_views = NAV_GROUPS[group]
+
+_view_widget_key = f"main_view_{group}"
+if st.session_state.get(_view_widget_key) not in (None, *group_views):
+    del st.session_state[_view_widget_key]
+
 # Streamlit drops a widget's state while it isn't rendered, so the other
 # group's last view is remembered in a plain session key and fed back as default.
 _last_key = f"_last_view_{group}"
-_last = st.session_state.get(_last_key, next(iter(group_views)))
+_last = st.session_state.get(_last_key)
+if _last not in group_views:
+    _last = next(iter(group_views))
+
 with st.container(key="nav_view"):
     view = st.segmented_control("View", list(group_views), default=_last,
-                                key=f"main_view_{group}", label_visibility="collapsed") or _last
+                                key=_view_widget_key, label_visibility="collapsed") or _last
 st.session_state[_last_key] = view
 group_views[view]()
