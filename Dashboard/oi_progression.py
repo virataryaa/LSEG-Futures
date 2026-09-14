@@ -634,19 +634,18 @@ def build_spot_summary_html(data: dict) -> str:
         p1, p0 = px(d1), px(d0)
         return (p1 - p0) / p0 * 100 if (d1 is not None and d0 is not None and p0) else np.nan
 
-    css = f"""<style>
-      .spotsum-wrap{{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}}
-      table.spotsum{{border-collapse:collapse;width:100%;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}}
-      table.spotsum th,table.spotsum td{{padding:1px 6px;text-align:center;border-bottom:1px solid #f4f4f5}}
-      table.spotsum th{{position:sticky;top:0;background:#0a2463;color:#fff;font-weight:600;
-        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}}
-      table.spotsum td.lbl{{text-align:left;font-weight:600;color:#1d1d1f;min-width:{_DATECOL_W}px}}
-      table.spotsum td.ccol{{min-width:{_CCOL_W}px}}
-      table.spotsum tr.delta td.lbl{{font-weight:400;color:#9ca3af;font-size:.62rem}}
-      table.spotsum tr.spacer td{{padding:2px 0;border:none}}
-      table.spotsum td.tot{{font-weight:700;background:#fafafa}}
-      table.spotsum tr.tue-row{{background:#eceef1}}
-      table.spotsum tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
+    css = """<style>
+      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}
+      table.spotsum{border-collapse:collapse;width:auto;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
+      table.spotsum th,table.spotsum td{padding:1px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
+      table.spotsum th{position:sticky;top:0;background:#0a2463;color:#fff;font-weight:600;
+        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}
+      table.spotsum td.lbl{text-align:left;font-weight:600;color:#1d1d1f;padding-left:10px}
+      table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.62rem}
+      table.spotsum tr.spacer td{padding:2px 0;border:none}
+      table.spotsum td.tot{font-weight:700;background:#fafafa}
+      table.spotsum tr.tue-row{background:#eceef1}
+      table.spotsum tbody tr:hover td{background-color:rgba(10,36,99,.04)}
     </style>"""
 
     # Shared scale across every delta row/column so the bars stay comparable
