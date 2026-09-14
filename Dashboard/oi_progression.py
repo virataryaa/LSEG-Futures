@@ -291,16 +291,31 @@ def build_chart(band, curr_df, metric_col, current_sym,
 
 
 def kpi_row(vals: list):
-    """vals = list of (label, value, delta, delta_color) — delta/delta_color optional."""
-    cols = st.columns(len(vals))
-    for col, item in zip(cols, vals):
+    """vals = list of (label, value, delta) — delta optional. One compact,
+    single-line strip of chips — st.metric's default size/padding was the
+    biggest thing on the page for what's essentially a caption."""
+    chips = []
+    for item in vals:
         label, value = item[0], item[1]
-        delta        = item[2] if len(item) > 2 else None
-        dc           = item[3] if len(item) > 3 else "normal"
-        if delta is not None:
-            col.metric(label, value, delta=delta, delta_color=dc)
-        else:
-            col.metric(label, value)
+        delta = item[2] if len(item) > 2 else None
+        delta_html = ""
+        if delta:
+            dc = "#dc2626" if str(delta).strip().startswith("-") else "#16a34a"
+            delta_html = f"<b style='color:{dc};font-weight:700;margin-left:4px'>{delta}</b>"
+        chips.append(
+            f"<span class='kpichip'><span class='kpil'>{label}</span> "
+            f"<span class='kpiv'>{value}</span>{delta_html}</span>"
+        )
+    st.markdown(
+        "<style>.kpirow{display:flex;flex-wrap:wrap;gap:0;border:1px solid #e5e7eb;"
+        "border-radius:6px;background:#fafbfc;margin:4px 0 10px;overflow:hidden;width:fit-content}"
+        ".kpichip{padding:4px 12px;border-right:1px solid #e5e7eb;white-space:nowrap;font-size:.72rem}"
+        ".kpichip:last-child{border-right:none}"
+        ".kpil{color:#9ca3af;font-size:.62rem;text-transform:uppercase;letter-spacing:.03em;margin-right:4px}"
+        ".kpiv{font-weight:700;color:#1a1a1a}</style>"
+        f"<div class='kpirow'>{''.join(chips)}</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ── Subplot trace helper (for 2x2 grid) ──────────────────────────────────────
