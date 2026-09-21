@@ -122,6 +122,16 @@ def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
     session reads as a sudden board-wide liquidation that never happened.
     """
     df = load_data(commodity, mtime)
+    # The database carries contracts from a given expiry onward, not the whole
+    # board as it stood on its first date. Until the earliest stored contract's
+    # last trading day, every date is missing the months that had already
+    # expired before it, so the "total" is a fraction of the real board — KC
+    # opens on 2008-04-17 with a single contract (18 lots), and averages ~4x
+    # below its post-2011 level until 2011-03-21. Summing those dates would drag
+    # the seasonal band's early-year lower edge down and start the history
+    # chart near zero. From that LTD on, every missing month has expired.
+    board_from = df.groupby("ice_symbol")["LTD"].first().min()
+    df = df[df["Date"] >= board_from]
     daily = (df.groupby("Date")
                .agg(total_oi=("open_interest", "sum"), n=("ice_symbol", "nunique"))
                .sort_index())
@@ -144,7 +154,12 @@ def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
         s = s[~s.index.duplicated(keep="last")].sort_index()
         if len(s) < 2:
             continue
-        s = s.reindex(pd.RangeIndex(int(s.index.min()), int(s.index.max()) + 1)).interpolate()
+        # A year that spans the calendar is padded to Jan 1 / Dec 31: the first
+        # print is usually Jan 2-3 and the last Dec 29-31, and without padding
+        # the band would be one year short on those few days and step there.
+        lo = 1 if s.index.min() <= 15 else int(s.index.min())
+        hi = 366 if s.index.max() >= 350 and yr != daily["year"].max() else int(s.index.max())
+        s = s.reindex(pd.RangeIndex(lo, hi + 1)).interpolate(limit_direction="both")
         pieces.append(pd.DataFrame({"year": yr, "doy": s.index, "total_oi": s.to_numpy()}))
     if not pieces:
         return None
@@ -152,11 +167,20 @@ def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
 
     last_date = daily.index.max()
     cur_year = int(last_date.year)
+    # A year only enters the band if it spans (almost) the whole calendar. A
+    # part-year such as the first one after board_from (RC opens 25 Jan, KC
+    # 21 Mar) would be absent from the early days and present later, so the
+    # min/max/quartile edges would step at the day it starts instead of
+    # reflecting the market.
+    cover = dense.groupby("year")["doy"].agg(["min", "max"])
+    full_years = {int(y) for y, r in cover.iterrows() if r["min"] <= 15 and r["max"] >= 350}
     band_years = [int(y) for y in sorted(dense["year"].unique())
-                  if hist_year_range[0] <= y <= hist_year_range[1] and y != cur_year]
+                  if hist_year_range[0] <= y <= hist_year_range[1]
+                  and y != cur_year and y in full_years]
     band = (_hist_band(dense[dense["year"].isin(band_years)], "total_oi", x="doy")
             if band_years else None)
     return dict(dense=dense, band=band, band_years=band_years, cur_year=cur_year,
+                series=daily["total_oi"], board_from=board_from,
                 last_date=last_date, last_oi=float(daily["total_oi"].iloc[-1]),
                 last_doy=int(daily["doy"].iloc[-1]), trimmed=trimmed)
 
@@ -1586,6 +1610,49 @@ def _view_oi():
         if seas["trimmed"]:
             st.caption(f"{seas['trimmed']} latest session(s) left out: fewer contracts had "
                        f"published OI than usual, so the board total would read short.")
+
+        # ── Total OI time series ──────────────────────────────────────────────
+        st.markdown(f"#### {COMMODITIES[commodity][1]} — Total OI History")
+        st.caption(f"Starts {seas['board_from']:%d %b %Y}, the first date the database holds "
+                   f"every listed contract; earlier dates are missing months that had "
+                   f"already expired, so their totals would read far too low.")
+        ts = seas["series"]
+        ma = ts.rolling(50, min_periods=50).mean()
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(x=ts.index, y=ts.values, mode="lines", name="Total OI",
+            line=dict(color=C["oi_avg"], width=1.6),
+            hovertemplate="%{x|%d %b %Y}<br>Total OI: %{y:,.0f}<extra></extra>"))
+        fig_hist.add_trace(go.Scatter(x=ma.index, y=ma.values, mode="lines", name="50-day MA",
+            line=dict(color="#6b7280", width=1.2, dash="dot"),
+            hovertemplate="50d MA: %{y:,.0f}<extra></extra>"))
+        fig_hist.add_trace(go.Scatter(x=[ts.index[-1]], y=[ts.iloc[-1]], mode="markers",
+            marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
+            showlegend=False, hoverinfo="skip"))
+        # Opens on the last 5 years: the full history back to 2010 squeezes
+        # the recent moves flat. The range buttons widen it on demand.
+        _end = ts.index[-1]
+        fig_hist.update_layout(
+            height=420, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+            font=dict(color=C["font"], family="Inter, sans-serif"),
+            xaxis=dict(range=[max(ts.index[0], _end - pd.DateOffset(years=5)), _end],
+                       showgrid=True, gridcolor=C["grid"], zeroline=False,
+                       tickfont=dict(size=11, color=C["font"]),
+                       rangeselector=dict(
+                           buttons=[dict(count=6, label="6M", step="month", stepmode="backward"),
+                                    dict(count=1, label="1Y", step="year", stepmode="backward"),
+                                    dict(count=3, label="3Y", step="year", stepmode="backward"),
+                                    dict(count=5, label="5Y", step="year", stepmode="backward"),
+                                    dict(step="all", label="All")],
+                           bgcolor="#f3f4f6", activecolor="#dbe4f5",
+                           font=dict(size=10, color=C["font"]), x=0, y=1.08)),
+            yaxis=dict(title="Total Open Interest (contracts)", tickformat=",.0f",
+                       showgrid=True, gridcolor=C["grid"], zeroline=False,
+                       tickfont=dict(size=11, color=C["font"])),
+            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
+                        bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            hovermode="x unified", margin=dict(l=70, r=30, t=50, b=60),
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
