@@ -590,6 +590,15 @@ def _fmt_pct(v) -> str:
     return f"{v:+.1f}%"
 
 
+def _flat_tint(v) -> str:
+    """A flat, sign-only background wash (no magnitude bar) — reads clean
+    across many narrow columns, where a magnitude-scaled bar tends to
+    render as a thin, glitchy-looking sliver for small values."""
+    if pd.isna(v) or v == 0:
+        return ""
+    return "background:rgba(22,163,74,.12)" if v > 0 else "background:rgba(220,38,38,.12)"
+
+
 # Shared fixed widths so the contract-month columns line up pixel-for-pixel
 # between the daily grid and the separate "per expiry" table below it — two
 # independent tables won't auto-align on their own since each has a
@@ -872,6 +881,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
     spread_label = f"{leg1}-{_leg_suffix(leg2)}" if have_spread else "Spread"
 
+    oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
 
     css = f"""<style>
       .spotgrid-wrap{{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}}
@@ -920,13 +930,14 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
-        cells += f"<td>{_fmt_pct(px_pct_v)}</td>"
-        cells += f"<td>{_fmt_num(oi_chg_v, True)}</td>"
-        cells += f"<td>{_fmt_num(spot_chg_v, True)}</td>"
-        cells += f"<td>{_fmt_num(non_spot_chg_v, True)}</td>"
+        cells += f"<td style='{_flat_tint(px_pct_v)};color:{_sign_color(px_pct_v)}'>{_fmt_pct(px_pct_v)}</td>"
+        cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
+        cells += f"<td style='{_flat_tint(spot_chg_v)};color:{_sign_color(spot_chg_v)};font-weight:600'>{_fmt_num(spot_chg_v, True)}</td>"
+        cells += f"<td style='{_flat_tint(non_spot_chg_v)};color:{_sign_color(non_spot_chg_v)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
         cells += f"<td style='color:#9ca3af'>{d_str}</td>"
-        cells += f"<td>{spread_v:+.2f}</td>" if pd.notna(spread_v) else "<td></td>"
-        cells += f"<td>{_fmt_num(oichg5d_v, True)}</td>"
+        cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
+                  if pd.notna(spread_v) else "<td></td>")
+        cells += f"<td style='{_oi_chg_style(oichg5d_v, oi_chg_vmax)};color:{_sign_color(oichg5d_v)}'>{_fmt_num(oichg5d_v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -950,6 +961,7 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
         return None
     dates_desc = sorted(dates, reverse=True)
     syms = _syms_in_window(data, dates)
+    col_vmax = per_chg.loc[dates].abs().max()
 
     css = f"""<style>
       .expchg-wrap{{overflow:auto;max-height:480px;border:1px solid #e5e7eb;border-radius:6px}}
@@ -972,7 +984,7 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
         cells = f"<td class='date-cell'>{d_str}</td>"
         for s in syms:
             v = per_chg.at[d, s] if s in per_chg.columns else np.nan
-            cells += f"<td class='ccol'>{_fmt_num(v, True)}</td>"
+            cells += f"<td class='ccol' style='{_oi_chg_style(v, col_vmax.get(s))}'>{_fmt_num(v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='expchg-wrap'><table class='expchg'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -2309,12 +2321,6 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
 
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
                "Daily Grid</div>", unsafe_allow_html=True)
-    if spot_data.get("total_source") == "LSEG":
-        st.caption("Total Mkt OI is LSEG's own whole-market series (TOTCNTROI), and OI Chg / Non Spot Chg "
-                   "are taken from it. It can differ slightly from the sum of the contract columns on a "
-                   "day an expiring or illiquid month has no print.")
-    else:
-        st.caption("Total Mkt OI is summed from the contract columns (the stored LSEG total was not found).")
     html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
     if html_spot is None:
         st.info("No data in this window.")
