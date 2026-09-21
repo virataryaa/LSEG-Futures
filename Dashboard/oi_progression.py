@@ -590,15 +590,6 @@ def _fmt_pct(v) -> str:
     return f"{v:+.1f}%"
 
 
-def _flat_tint(v) -> str:
-    """A flat, sign-only background wash (no magnitude bar) — reads clean
-    across many narrow columns, where a magnitude-scaled bar tends to
-    render as a thin, glitchy-looking sliver for small values."""
-    if pd.isna(v) or v == 0:
-        return ""
-    return "background:rgba(22,163,74,.12)" if v > 0 else "background:rgba(220,38,38,.12)"
-
-
 # Shared fixed widths so the contract-month columns line up pixel-for-pixel
 # between the daily grid and the separate "per expiry" table below it — two
 # independent tables won't auto-align on their own since each has a
@@ -786,15 +777,6 @@ def build_spot_summary_html(data: dict) -> str:
       table.spotsum tbody tr:hover td{background-color:rgba(10,36,99,.04)}
     </style>"""
 
-    # Shared scale across every delta row/column so the bars stay comparable
-    # to each other — a per-row max would make a quiet day's bar look as
-    # "full" as the heaviest week's.
-    all_deltas = []
-    for d1, d0 in [(max_date, prev_day), (max_date, last_cot), (last_cot, prev_cot), (prev_cot, prev_cot2)]:
-        if d1 is not None and d0 is not None:
-            all_deltas.append((oi_row(d1) - oi_row(d0)).abs())
-    delta_vmax = _safe(pd.concat(all_deltas).max()) if all_deltas else 1.0
-
     def value_row(label, d):
         if d is None:
             return ""
@@ -809,15 +791,14 @@ def build_spot_summary_html(data: dict) -> str:
             return ""
         delta = oi_row(d1) - oi_row(d0)
         cells = "".join(
-            f"<td class='ccol' style='{_oi_chg_style(delta.get(s), delta_vmax)};color:{_sign_color(delta.get(s))};font-weight:600'>"
-            f"{_fmt_num(delta.get(s), True)}</td>" for s in syms
+            f"<td class='ccol'>{_fmt_num(delta.get(s), True)}</td>" for s in syms
         )
         tot_delta = total_oi.get(d1) - total_oi.get(d0)
         px_pct = px_chg_pct(d1, d0)
         return (
             f"<tr class='delta'><td class='lbl'>{label}</td>{cells}"
-            f"<td class='tot' style='{_oi_chg_style(tot_delta, delta_vmax)};color:{_sign_color(tot_delta)}'>{_fmt_num(tot_delta, True)}</td>"
-            f"<td style='{_flat_tint(px_pct)};color:{_sign_color(px_pct)}'>{_fmt_pct(px_pct)}</td></tr>"
+            f"<td class='tot'>{_fmt_num(tot_delta, True)}</td>"
+            f"<td>{_fmt_pct(px_pct)}</td></tr>"
         )
 
     spacer = f"<tr class='spacer'><td colspan='{len(syms) + 3}'></td></tr>"
@@ -880,7 +861,6 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
     spread_label = f"{leg1}-{_leg_suffix(leg2)}" if have_spread else "Spread"
 
-    oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
 
     css = f"""<style>
       .spotgrid-wrap{{overflow:auto;max-height:600px;border:1px solid #e5e7eb;border-radius:6px}}
@@ -929,14 +909,13 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
         cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
         cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
-        cells += f"<td style='{_flat_tint(px_pct_v)};color:{_sign_color(px_pct_v)}'>{_fmt_pct(px_pct_v)}</td>"
-        cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
-        cells += f"<td style='{_flat_tint(spot_chg_v)};color:{_sign_color(spot_chg_v)};font-weight:600'>{_fmt_num(spot_chg_v, True)}</td>"
-        cells += f"<td style='{_flat_tint(non_spot_chg_v)};color:{_sign_color(non_spot_chg_v)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
+        cells += f"<td>{_fmt_pct(px_pct_v)}</td>"
+        cells += f"<td>{_fmt_num(oi_chg_v, True)}</td>"
+        cells += f"<td>{_fmt_num(spot_chg_v, True)}</td>"
+        cells += f"<td>{_fmt_num(non_spot_chg_v, True)}</td>"
         cells += f"<td style='color:#9ca3af'>{d_str}</td>"
-        cells += (f"<td style='{_flat_tint(spread_v)};color:{_sign_color(spread_v)}'>{spread_v:+.2f}</td>"
-                  if pd.notna(spread_v) else "<td></td>")
-        cells += f"<td style='{_oi_chg_style(oichg5d_v, oi_chg_vmax)};color:{_sign_color(oichg5d_v)}'>{_fmt_num(oichg5d_v, True)}</td>"
+        cells += f"<td>{spread_v:+.2f}</td>" if pd.notna(spread_v) else "<td></td>"
+        cells += f"<td>{_fmt_num(oichg5d_v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -960,7 +939,6 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
         return None
     dates_desc = sorted(dates, reverse=True)
     syms = _syms_in_window(data, dates)
-    col_vmax = per_chg.loc[dates].abs().max()
 
     css = f"""<style>
       .expchg-wrap{{overflow:auto;max-height:480px;border:1px solid #e5e7eb;border-radius:6px}}
@@ -983,7 +961,7 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
         cells = f"<td class='date-cell'>{d_str}</td>"
         for s in syms:
             v = per_chg.at[d, s] if s in per_chg.columns else np.nan
-            cells += f"<td class='ccol' style='{_oi_chg_style(v, col_vmax.get(s))}'>{_fmt_num(v, True)}</td>"
+            cells += f"<td class='ccol'>{_fmt_num(v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='expchg-wrap'><table class='expchg'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
