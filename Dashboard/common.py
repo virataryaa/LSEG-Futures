@@ -94,6 +94,32 @@ def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     return df[df["open_interest"] > 0].copy()
 
 
+def _total_oi_mtime() -> float:
+    p = DB_PATH / "total_oi.parquet"
+    return p.stat().st_mtime if p.exists() else 0.0
+
+
+@st.cache_data
+def load_total_oi(commodity: str, mtime: float = 0.0):
+    """LSEG's own whole-market futures open interest (TOTCNTROI) for one
+    commodity, as a Date-indexed float Series — or None if the builder has not
+    stored it yet, so callers can fall back to summing the per-contract table.
+
+    Unlike that sum it needs no complete board of contracts behind it, so it
+    is not short on a session where an expiring month has no row, and it runs
+    back to 2000 for the US markets rather than starting where the database's
+    earliest stored contract expires (2011)."""
+    p = DB_PATH / "total_oi.parquet"
+    if not p.exists():
+        return None
+    df = pd.read_parquet(p)
+    df = df[df["commodity"] == commodity]
+    if df.empty:
+        return None
+    s = df.assign(Date=pd.to_datetime(df["Date"])).set_index("Date")["total_oi"]
+    return s.astype("float64").sort_index()
+
+
 @st.cache_data
 def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     """Adds oi_share_pct, vol_share_pct, vol_oi_ratio to every row."""

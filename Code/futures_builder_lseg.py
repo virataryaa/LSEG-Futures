@@ -60,9 +60,18 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 START_YEAR = 2011
-FIELDS     = ["OPEN_PRC", "HIGH_1", "LOW_1", "TRDPRC_1", "ACVOL_UNS", "OPINT_1"]
+# `settlement` is LSEG's SETTLE field, not TRDPRC_1. TRDPRC_1 is the LAST TRADE,
+# which is null on any day a contract did not trade and otherwise sits a few
+# points off the official settlement: measured on KC it equalled SETTLE on only
+# 1-4% of days (mean gap 0.7-1.9 points), and for a deferred month roughly 30%
+# of days had no trade at all. Anchoring the series on TRDPRC_1 therefore
+# (a) stored last-trade prices under the name "settlement", and (b) dropped
+# every no-trade session outright — including an expiring month's final days,
+# whose real OI and settlement were then missing or interpolated.
+FIELDS     = ["OPEN_PRC", "HIGH_1", "LOW_1", "SETTLE", "ACVOL_UNS", "OPINT_1"]
 COL_MAP    = {"OPEN_PRC": "Open", "HIGH_1": "High", "LOW_1": "Low",
-              "TRDPRC_1": "settlement", "ACVOL_UNS": "volume", "OPINT_1": "open_interest"}
+              "SETTLE": "settlement", "ACVOL_UNS": "volume", "OPINT_1": "open_interest"}
+TOTAL_OI_FIELD = "TOTCNTROI"      # LSEG's own whole-market open interest
 
 # ── HOLIDAY CALENDARS (identical to Rollex/COT_ALL migrations) ─────────────
 
@@ -255,9 +264,19 @@ def resolve_and_fetch(ld, root: str, month_code: str, year: int, start: str, end
         df.index = pd.to_datetime(df.index).normalize()
         full_idx = pd.date_range(start=df.index.min(), end=df.index.max(), freq=bday)
         df = df.reindex(full_idx)
-        for col in ["Open", "High", "Low", "settlement", "volume", "open_interest"]:
+        real = df["settlement"].notna()      # sessions LSEG actually published
+        # Only settlement and open interest are interpolated, and only across
+        # sessions LSEG is missing outright. Open/High/Low stay null on a day
+        # nothing traded (there is no such price), and volume is a flow, not a
+        # level: a session with a settlement but no volume print traded zero
+        # lots, and a hole has no known volume — neither is a straight line
+        # between its neighbours (the old code stored 2.33 and 3.67 lots of
+        # KCU6 "volume" on two days that had none).
+        for col in ["settlement", "open_interest"]:
             if col in df.columns:
                 df[col] = df[col].interpolate(method="linear", limit_area="inside")
+        if "volume" in df.columns:
+            df.loc[real, "volume"] = df.loc[real, "volume"].fillna(0)
         df = df[df["settlement"].notna()]
         return cand, df
     return None, None
@@ -325,6 +344,59 @@ def save(comm: str, new: pd.DataFrame, full: bool):
     log.info(f"Saved {comm} -> {out_path.name} | {len(merged):,} rows | "
               f"{merged['Date'].min().date()} -> {merged['Date'].max().date()} | "
               f"{merged['ice_symbol'].nunique()} contracts")
+
+
+TOTAL_OI_PATH = DB_DIR / "total_oi.parquet"
+TOTAL_OI_START = "2000-01-01"     # LSEG carries it back to 2000 for the US markets
+
+
+def update_total_oi(ld, comm: str, full: bool) -> int:
+    """Store LSEG's whole-market open interest (TOTCNTROI) for one commodity.
+
+    This is the exchange-wide futures total across every listed month, so the
+    dashboard can plot it directly instead of summing the per-contract table —
+    which under-reads on any session where an expiring or illiquid month is
+    missing a row, and only starts once the database holds the full board
+    (2011). The value is identical whichever contract's RIC it is queried
+    through (verified on KCc1/c2/c3/KCZ6/KCH7), and it matched the CFTC's
+    "Futures Only" total open interest exactly on every Tuesday checked.
+
+    Incremental runs re-fetch a 10-day overlap so a session stored before its
+    figure was final is corrected, not left as first written.
+    """
+    ric = f"{CONTRACT_CONFIG[comm].lseg_root}c2"
+    old = None
+    if TOTAL_OI_PATH.exists():
+        old = pd.read_parquet(TOTAL_OI_PATH)
+        old["Date"] = pd.to_datetime(old["Date"])
+    mine = old[old["commodity"] == comm] if old is not None else None
+    if full or mine is None or mine.empty:
+        start = TOTAL_OI_START
+    else:
+        start = (mine["Date"].max() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    try:
+        h = ld.get_history(universe=[ric], fields=[TOTAL_OI_FIELD], start=start,
+                           end=pd.Timestamp.today().strftime("%Y-%m-%d"),
+                           interval="daily", count=10000)
+        _CONSEC_FAILS["n"] = 0
+    except Exception as e:
+        log.warning(f"  {comm}: total OI fetch failed ({ric}): {str(e)[:120]}")
+        return 0
+    if h is None or h.empty:
+        log.warning(f"  {comm}: total OI returned nothing ({ric})")
+        return 0
+    s = h.iloc[:, 0].dropna()
+    s = s[s > 0]
+    new = pd.DataFrame({"Date": pd.to_datetime(s.index).normalize(), "commodity": comm,
+                        "total_oi": s.astype("float64").to_numpy()})
+    keep = old[old["commodity"] != comm] if (old is not None and full) else old
+    merged = pd.concat([keep, new], ignore_index=True) if keep is not None else new
+    merged = (merged.drop_duplicates(subset=["commodity", "Date"], keep="last")
+                    .sort_values(["commodity", "Date"]).reset_index(drop=True))
+    merged.to_parquet(TOTAL_OI_PATH, index=False)
+    log.info(f"  {comm}: total OI {len(new):,} rows ({new['Date'].min().date()} -> "
+             f"{new['Date'].max().date()}), latest {int(new['total_oi'].iloc[-1]):,}")
+    return len(new)
 
 
 def topup_open_interest(ld, comm: str) -> int:
@@ -472,6 +544,7 @@ if __name__ == "__main__":
                 log.warning(f"Unknown commodity {comm}, skipping")
                 continue
             log.info(f"--- {comm} ---")
+            update_total_oi(ld, comm, args.full)
             if args.oi_topup_only:
                 topup_open_interest(ld, comm)
                 continue

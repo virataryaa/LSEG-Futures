@@ -12,7 +12,7 @@ from datetime import date
 st.set_page_config(page_title="Futures Dashboard", page_icon="📈", layout="wide")
 
 from common import (DB_PATH, COMMODITIES, MONTH_NAMES, MONTH_ORDER, C,
-                    _mtime, load_data, load_enriched,
+                    _mtime, _total_oi_mtime, load_data, load_enriched, load_total_oi,
                     _safe, _oi_heatmap_style, _bar_style,
                     _diverging_bar_style, _oi_chg_style, _vol_style,
                     render_data_freshness)
@@ -107,9 +107,14 @@ _SEAS_REF_YEAR = 2000   # a leap year, so Feb 29 has a slot on the shared axis
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
-def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
-    """Total board OI (every listed contract summed) by calendar day of year,
-    one series per year, plus a historical band.
+def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0, oi_mtime=0.0):
+    """Whole-market OI by calendar day of year, one series per year, plus a
+    historical band.
+
+    The series is LSEG's own market total (TOTCNTROI, stored by the builder in
+    total_oi.parquet). Only if that has not been stored does it fall back to
+    summing every contract in the per-contract table — the fallback path
+    below, with its own start-of-board and half-published-session handling.
 
     Aligned on month/day mapped into a leap reference year rather than raw
     dayofyear: raw dayofyear shifts every date after Feb 28 by one in a leap
@@ -121,7 +126,18 @@ def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
     dropped: OI lands contract by contract, and summing a half-published
     session reads as a sudden board-wide liquidation that never happened.
     """
-    df = load_data(commodity, mtime)
+    stored = load_total_oi(commodity, oi_mtime)
+    if stored is not None and len(stored) > 30:
+        # LSEG's early history is not always a real total (Robusta opens 2008 at
+        # a value of 1); start from the first date it reaches a plausible level.
+        typical = float(stored.iloc[-250:].median())
+        ok = stored[stored >= 0.2 * typical]
+        daily = pd.DataFrame({"total_oi": ok})
+        source, board_from, trimmed = "LSEG", ok.index.min(), 0
+    else:
+        daily, source, board_from, trimmed = None, "sum", None, 0
+    if daily is None:
+        df = load_data(commodity, mtime)
     # The database carries contracts from a given expiry onward, not the whole
     # board as it stood on its first date. Until the earliest stored contract's
     # last trading day, every date is missing the months that had already
@@ -130,17 +146,18 @@ def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
     # below its post-2011 level until 2011-03-21. Summing those dates would drag
     # the seasonal band's early-year lower edge down and start the history
     # chart near zero. From that LTD on, every missing month has expired.
-    board_from = df.groupby("ice_symbol")["LTD"].first().min()
-    df = df[df["Date"] >= board_from]
-    daily = (df.groupby("Date")
-               .agg(total_oi=("open_interest", "sum"), n=("ice_symbol", "nunique"))
-               .sort_index())
-    n = daily["n"].to_numpy()
-    keep = len(daily)
-    while keep > 11 and n[keep - 1] < 0.8 * np.median(n[keep - 11:keep - 1]):
-        keep -= 1
-    trimmed = len(daily) - keep
-    daily = daily.iloc[:keep]
+    if daily is None:
+        board_from = df.groupby("ice_symbol")["LTD"].first().min()
+        df = df[df["Date"] >= board_from]
+        daily = (df.groupby("Date")
+                   .agg(total_oi=("open_interest", "sum"), n=("ice_symbol", "nunique"))
+                   .sort_index())
+        n = daily["n"].to_numpy()
+        keep = len(daily)
+        while keep > 11 and n[keep - 1] < 0.8 * np.median(n[keep - 11:keep - 1]):
+            keep -= 1
+        trimmed = len(daily) - keep
+        daily = daily.iloc[:keep]
     if daily.empty:
         return None
 
@@ -180,7 +197,7 @@ def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
     band = (_hist_band(dense[dense["year"].isin(band_years)], "total_oi", x="doy")
             if band_years else None)
     return dict(dense=dense, band=band, band_years=band_years, cur_year=cur_year,
-                series=daily["total_oi"], board_from=board_from,
+                series=daily["total_oi"], board_from=board_from, source=source,
                 last_date=last_date, last_oi=float(daily["total_oi"].iloc[-1]),
                 last_doy=int(daily["doy"].iloc[-1]), trimmed=trimmed)
 
@@ -1522,10 +1539,11 @@ def _view_oi():
     # ── Total OI seasonality ──────────────────────────────────────────────────
     st.markdown("---")
     st.markdown(f"### {COMMODITIES[commodity][1]} — Total OI Seasonality")
-    st.caption("All listed contracts summed, by calendar day. Band and mean use the "
-               "Historical Years in the sidebar; the current year is never in its own band.")
+    st.caption("Whole-market futures open interest (LSEG TOTCNTROI), by calendar day. Band and "
+               "mean use the Historical Years in the sidebar; the current year is never in its "
+               "own band.")
 
-    seas = build_total_oi_seasonal(commodity, tuple(hist_range), mt)
+    seas = build_total_oi_seasonal(commodity, tuple(hist_range), mt, _total_oi_mtime())
     if seas is None:
         st.info("Not enough history for a seasonal view.")
     else:
@@ -1613,9 +1631,12 @@ def _view_oi():
 
         # ── Total OI time series ──────────────────────────────────────────────
         st.markdown(f"#### {COMMODITIES[commodity][1]} — Total OI History")
-        st.caption(f"Starts {seas['board_from']:%d %b %Y}, the first date the database holds "
-                   f"every listed contract; earlier dates are missing months that had "
-                   f"already expired, so their totals would read far too low.")
+        if seas["source"] == "LSEG":
+            st.caption(f"LSEG whole-market total (TOTCNTROI), from {seas['board_from']:%d %b %Y}.")
+        else:
+            st.caption(f"Summed from the per-contract table (the stored LSEG total was not found); "
+                       f"starts {seas['board_from']:%d %b %Y}, the first date the database holds "
+                       f"every listed contract.")
         ts = seas["series"]
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Scatter(x=ts.index, y=ts.values, mode="lines", name="Total OI",
@@ -1627,6 +1648,7 @@ def _view_oi():
         # Opens on the last 5 years: the full history back to 2010 squeezes
         # the recent moves flat. The range buttons widen it on demand.
         _end = ts.index[-1]
+        _vis = ts[ts.index >= max(ts.index[0], _end - pd.DateOffset(years=5))]
         fig_hist.update_layout(
             height=420, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
             font=dict(color=C["font"], family="Inter, sans-serif"),
@@ -1641,7 +1663,12 @@ def _view_oi():
                                     dict(step="all", label="All")],
                            bgcolor="#f3f4f6", activecolor="#dbe4f5",
                            font=dict(size=10, color=C["font"]), x=0, y=1.08)),
+            # Plotly autoranges y over ALL the data, not the opening x-window, so
+            # the 26-year history dragged the axis down to the 2000 level while
+            # only the last 5 years show. Fit the opening window; the range
+            # buttons still re-autorange when the user widens it.
             yaxis=dict(title="Total Open Interest (contracts)", tickformat=",.0f",
+                       range=[float(_vis.min()) * 0.94, float(_vis.max()) * 1.04],
                        showgrid=True, gridcolor=C["grid"], zeroline=False,
                        tickfont=dict(size=11, color=C["font"])),
             legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,

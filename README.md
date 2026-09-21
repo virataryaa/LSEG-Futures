@@ -17,6 +17,15 @@ back to 2011.
 - **`Database/{comm}_futures.parquet`** — one file per commodity, same 13-
   column schema as the ICE source: `Date, commodity, ice_symbol, month, year,
   FND, LTD, Open, High, Low, settlement, volume, open_interest`.
+  `settlement` is LSEG's `SETTLE` field (official settlement). It used to be
+  `TRDPRC_1`, the last trade, which is null on any no-trade day and sits off
+  the settlement otherwise; rebuilt 2026-09-21. `Open/High/Low` are null on a
+  day nothing traded, and `volume` is 0 there rather than interpolated.
+- **`Database/total_oi.parquet`** — LSEG's own whole-market futures open
+  interest (`TOTCNTROI`, queried on `<root>c2`) per commodity, `Date,
+  commodity, total_oi`, back to 2000 (US) / 2008 (RC). Refreshed every run with
+  a 10-day overlap. Matches the CFTC 'Futures Only' total exactly and is what
+  the Total OI charts plot; summing the per-contract table is only the fallback.
 - **`Dashboard/oi_progression.py`** — copied from the ICE source (pure parquet
   consumer, zero API calls). OI Progression, Recap, Charts, Spreads, Volume,
   Flow and grid tabs, DTE-aligned seasonality banding. Single-commodity by
