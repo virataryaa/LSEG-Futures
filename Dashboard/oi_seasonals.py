@@ -41,15 +41,21 @@ BAND_INNER = "rgba(99,149,237,0.28)"
 BAND_OUTER = "rgba(99,149,237,0.10)"
 NAV_ACCENT = C["oi_avg"]
 
-# London white sugar (LSU) lists H, K, Q, V, Z — there is no July. The sugar
-# preset used to ask for LSU K+N+V, so its "N" leg never existed and every year
-# was silently a five-leg basket. Q (August) is London's nearest month to SB's
-# July, so that is what the LSU side takes.
+# Each market family lists the combined basket first, then its New York leg,
+# then its London leg, so the single legs can be read on their own. Cocoa is
+# first, which makes CC + LCC the default. London white sugar (LSU) lists H, K, Q,
+# V, Z - there is no July - so the LSU side takes Q (August), its nearest month
+# to SB's July; asking for LSU N left every sugar year a silent five-leg basket.
 PRESETS = {
     "CC Z+H, LCC Z+H":                   {"CC": ["Z", "H"], "LCC": ["Z", "H"]},
-    "SB K+N+V, LSU K+Q+V":               {"SB": ["K", "N", "V"], "LSU": ["K", "Q", "V"]},
-    "KC Z+H, RC X+F":                    {"KC": ["Z", "H"], "RC": ["X", "F"]},
     "CC Z+H":                            {"CC": ["Z", "H"]},
+    "LCC Z+H":                           {"LCC": ["Z", "H"]},
+    "KC Z+H, RC X+F":                    {"KC": ["Z", "H"], "RC": ["X", "F"]},
+    "KC Z+H":                            {"KC": ["Z", "H"]},
+    "RC X+F":                            {"RC": ["X", "F"]},
+    "SB K+N+V, LSU K+Q+V":               {"SB": ["K", "N", "V"], "LSU": ["K", "Q", "V"]},
+    "SB K+N+V":                          {"SB": ["K", "N", "V"]},
+    "LSU K+Q+V":                         {"LSU": ["K", "Q", "V"]},
 }
 
 
