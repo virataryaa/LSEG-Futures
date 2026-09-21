@@ -77,20 +77,21 @@ def _compute_dte_max(commodity, month, hist_year_range, mtime=0.0):
     return int(round(peak_dtes.mean()))
 
 
-def _hist_band(dense_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
-    """min/max/mean/q25/q75 of metric_col per days_to_expiry, then a 7-point
+def _hist_band(dense_df: pd.DataFrame, metric_col: str, x: str = "days_to_expiry") -> pd.DataFrame:
+    """min/max/mean/q25/q75 of metric_col per `x` (days_to_expiry unless the
+    caller aligns on something else, e.g. day of year), then a 7-point
     rolling smooth. Uses groupby(...).quantile() (pandas' own vectorized
     path) rather than .agg(hist_q25=lambda x: x.quantile(...)) — the lambda
     form calls quantile once per group via slow Python dispatch instead of
     pandas' optimized C-level implementation; on a wide days-to-expiry range
     this was the single biggest cost in a cold commodity switch (~5s of a
     ~10s total in profiling, from ~23k quantile calls)."""
-    g = dense_df.groupby("days_to_expiry")[metric_col]
+    g = dense_df.groupby(x)[metric_col]
     band = g.agg(hist_min="min", hist_max="max", hist_mean="mean").reset_index()
     q25 = g.quantile(0.25).rename("hist_q25").reset_index()
     q75 = g.quantile(0.75).rename("hist_q75").reset_index()
-    band = band.merge(q25, on="days_to_expiry").merge(q75, on="days_to_expiry")
-    band = band.sort_values("days_to_expiry")
+    band = band.merge(q25, on=x).merge(q75, on=x)
+    band = band.sort_values(x)
     for c in ["hist_mean", "hist_q25", "hist_q75"]:
         band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
     # min/max stay the true extremes (unsmoothed), so at a local spike the
@@ -100,6 +101,64 @@ def _hist_band(dense_df: pd.DataFrame, metric_col: str) -> pd.DataFrame:
     band["hist_max"] = band[["hist_max", "hist_q75"]].max(axis=1)
     band["hist_min"] = band[["hist_min", "hist_q25"]].min(axis=1)
     return band
+
+
+_SEAS_REF_YEAR = 2000   # a leap year, so Feb 29 has a slot on the shared axis
+
+
+@st.cache_data(max_entries=50, show_spinner=False)
+def build_total_oi_seasonal(commodity, hist_year_range, mtime=0.0):
+    """Total board OI (every listed contract summed) by calendar day of year,
+    one series per year, plus a historical band.
+
+    Aligned on month/day mapped into a leap reference year rather than raw
+    dayofyear: raw dayofyear shifts every date after Feb 28 by one in a leap
+    year, so Mar 1 would sit on day 60 in 2023 but day 61 in 2024. Each year is
+    then interpolated across weekends/holidays onto a continuous daily grid,
+    the same densify-then-band treatment the DTE charts use.
+
+    Trailing dates where noticeably fewer contracts printed than usual are
+    dropped: OI lands contract by contract, and summing a half-published
+    session reads as a sudden board-wide liquidation that never happened.
+    """
+    df = load_data(commodity, mtime)
+    daily = (df.groupby("Date")
+               .agg(total_oi=("open_interest", "sum"), n=("ice_symbol", "nunique"))
+               .sort_index())
+    n = daily["n"].to_numpy()
+    keep = len(daily)
+    while keep > 11 and n[keep - 1] < 0.8 * np.median(n[keep - 11:keep - 1]):
+        keep -= 1
+    trimmed = len(daily) - keep
+    daily = daily.iloc[:keep]
+    if daily.empty:
+        return None
+
+    idx = daily.index
+    ref = pd.to_datetime(pd.DataFrame({"year": _SEAS_REF_YEAR, "month": idx.month, "day": idx.day}))
+    daily = daily.assign(year=idx.year, doy=ref.dt.dayofyear.to_numpy())
+
+    pieces = []
+    for yr, g in daily.groupby("year"):
+        s = g.set_index("doy")["total_oi"]
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        if len(s) < 2:
+            continue
+        s = s.reindex(pd.RangeIndex(int(s.index.min()), int(s.index.max()) + 1)).interpolate()
+        pieces.append(pd.DataFrame({"year": yr, "doy": s.index, "total_oi": s.to_numpy()}))
+    if not pieces:
+        return None
+    dense = pd.concat(pieces, ignore_index=True)
+
+    last_date = daily.index.max()
+    cur_year = int(last_date.year)
+    band_years = [int(y) for y in sorted(dense["year"].unique())
+                  if hist_year_range[0] <= y <= hist_year_range[1] and y != cur_year]
+    band = (_hist_band(dense[dense["year"].isin(band_years)], "total_oi", x="doy")
+            if band_years else None)
+    return dict(dense=dense, band=band, band_years=band_years, cur_year=cur_year,
+                last_date=last_date, last_oi=float(daily["total_oi"].iloc[-1]),
+                last_doy=int(daily["doy"].iloc[-1]), trimmed=trimmed)
 
 
 def _band_from_norm(dm, hist_syms, hist_year_range):
@@ -1435,6 +1494,98 @@ def _view_oi():
         tbl.columns = ["Date","DTE","Open Interest","Volume","Settlement"]
         tbl["Date"] = tbl["Date"].dt.strftime("%Y-%m-%d")
         st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+    # ── Total OI seasonality ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(f"### {COMMODITIES[commodity][1]} — Total OI Seasonality")
+    st.caption("All listed contracts summed, by calendar day. Band and mean use the "
+               "Historical Years in the sidebar; the current year is never in its own band.")
+
+    seas = build_total_oi_seasonal(commodity, tuple(hist_range), mt)
+    if seas is None:
+        st.info("Not enough history for a seasonal view.")
+    else:
+        dense_s, band_s = seas["dense"], seas["band"]
+        cy, doy_now, oi_now = seas["cur_year"], seas["last_doy"], seas["last_oi"]
+
+        def _at(frame, col, doy):
+            if frame is None:
+                return np.nan
+            r = frame.loc[frame["doy"] == doy, col]
+            return float(r.iloc[0]) if len(r) else np.nan
+
+        mean_now = _at(band_s, "hist_mean", doy_now)
+        ly_now = _at(dense_s[dense_s["year"] == cy - 1], "total_oi", doy_now)
+        n_yrs = len(seas["band_years"])
+        kpi_row([
+            ("Total OI",              f"{oi_now:,.0f}"),
+            ("As of",                 seas["last_date"].strftime("%b %d, %Y")),
+            (f"vs {n_yrs}Y Mean",     f"{mean_now:,.0f}" if pd.notna(mean_now) else "—",
+             f"{(oi_now / mean_now - 1) * 100:+.1f}%" if pd.notna(mean_now) and mean_now > 0 else None),
+            (f"vs {cy - 1} same day", f"{ly_now:,.0f}" if pd.notna(ly_now) else "—",
+             f"{(oi_now / ly_now - 1) * 100:+.1f}%" if pd.notna(ly_now) and ly_now > 0 else None),
+        ])
+
+        _x0 = pd.Timestamp(f"{_SEAS_REF_YEAR}-01-01")
+
+        def _dx(d):
+            return _x0 + pd.to_timedelta(np.asarray(d) - 1, unit="D")
+
+        fig_ts = go.Figure()
+        if band_s is not None and not band_s.empty:
+            bx = _dx(band_s["doy"])
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_max"], mode="lines",
+                line=dict(width=0), showlegend=False, hoverinfo="skip"))
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_min"], mode="lines",
+                line=dict(width=0), fill="tonexty", fillcolor=C["oi_outer"],
+                name="Min-Max Range", hoverinfo="skip"))
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_q75"], mode="lines",
+                line=dict(width=0), showlegend=False, hoverinfo="skip"))
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_q25"], mode="lines",
+                line=dict(width=0), fill="tonexty", fillcolor=C["oi_inner"],
+                name="25th-75th Pct", hoverinfo="skip"))
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_mean"], mode="lines",
+                line=dict(color=C["oi_avg"], width=2, dash="dash"), name=f"{n_yrs}Y Mean",
+                hovertemplate="Mean: %{y:,.0f}<extra></extra>"))
+
+        if show_individual:
+            for yr in seas["band_years"]:
+                g = dense_s[dense_s["year"] == yr]
+                fig_ts.add_trace(go.Scatter(x=_dx(g["doy"]), y=g["total_oi"], mode="lines",
+                    line=dict(width=0.9, color=C["individual"]), name=str(yr),
+                    hovertemplate=f"{yr}: %{{y:,.0f}}<extra></extra>"))
+
+        prev = dense_s[dense_s["year"] == cy - 1]
+        if not prev.empty:
+            fig_ts.add_trace(go.Scatter(x=_dx(prev["doy"]), y=prev["total_oi"], mode="lines",
+                line=dict(color="#6b7280", width=1.6), name=str(cy - 1),
+                hovertemplate=f"{cy - 1}: %{{y:,.0f}}<extra></extra>"))
+
+        cur = dense_s[dense_s["year"] == cy]
+        fig_ts.add_trace(go.Scatter(x=_dx(cur["doy"]), y=cur["total_oi"], mode="lines",
+            line=dict(color=C["current"], width=2.5), name=str(cy),
+            hovertemplate=f"<b>{cy}</b>: %{{y:,.0f}}<extra></extra>"))
+        fig_ts.add_trace(go.Scatter(x=_dx([doy_now]), y=[oi_now], mode="markers",
+            marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
+            showlegend=False, hoverinfo="skip"))
+
+        fig_ts.update_layout(
+            height=500, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+            font=dict(color=C["font"], family="Inter, sans-serif"),
+            xaxis=dict(tickformat="%b", dtick="M1", hoverformat="%d %b", showgrid=True,
+                       gridcolor=C["grid"], range=[_x0, _x0 + pd.Timedelta(days=365)],
+                       zeroline=False, tickfont=dict(size=11, color=C["font"])),
+            yaxis=dict(title="Total Open Interest (contracts)", tickformat=",.0f",
+                       showgrid=True, gridcolor=C["grid"], zeroline=False,
+                       tickfont=dict(size=11, color=C["font"])),
+            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
+                        bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+            hovermode="x unified", margin=dict(l=70, r=30, t=30, b=80),
+        )
+        st.plotly_chart(fig_ts, use_container_width=True)
+        if seas["trimmed"]:
+            st.caption(f"{seas['trimmed']} latest session(s) left out: fewer contracts had "
+                       f"published OI than usual, so the board total would read short.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
