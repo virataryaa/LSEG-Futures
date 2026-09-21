@@ -1271,6 +1271,64 @@ def build_price_spread_matrix_html(commodity: str, snapshot_date, mtime: float =
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Which sidebar controls each view actually reads ────────────────────────
+# Checked against what every _view_* function references, not guessed. A control
+# that a view does not read is hidden while that view is open: it changes
+# nothing there, and a wall of sliders that mostly do nothing makes the ones
+# that matter hard to find. Must stay in step with NAV_GROUPS (asserted below).
+_VIEW_CONTROLS = {
+    "Open Interest": {
+        "Progression":       {"month", "contract", "hist", "dte", "norm", "indiv"},
+        "Total Market OI":   {"hist", "indiv"},
+        "All Futures OI":    set(),
+        "Spread OI":         set(),
+        "Spot OI vs Spread": set(),
+    },
+    "Volume": {
+        "Progression":       {"month", "contract", "hist", "dte", "indiv", "roll"},
+        "Board":             {"roll"},
+    },
+    "OI & Volume": {
+        "Flow":              {"month", "contract"},
+        "Grid":              set(),
+    },
+}
+
+# The nav widgets are created further down the script, but their state is
+# already in place when it starts, so the open view is known before the sidebar
+# is drawn. Falls back exactly as the nav code below does.
+_g = st.session_state.get("main_group")
+if _g not in _VIEW_CONTROLS:
+    _g = next(iter(_VIEW_CONTROLS))
+_v = st.session_state.get(f"main_view_{_g}")
+if _v not in _VIEW_CONTROLS[_g]:
+    _v = st.session_state.get(f"_last_view_{_g}")
+if _v not in _VIEW_CONTROLS[_g]:
+    _v = next(iter(_VIEW_CONTROLS[_g]))
+_show = _VIEW_CONTROLS[_g][_v]
+
+# Streamlit forgets a widget's value on any run in which the widget is not drawn,
+# so a control hidden on one view would snap back to its default the moment the
+# user returned. Re-assigning a keyed value each run marks it as set, which keeps
+# it. (The widgets are created without value=/index= once seeded, which is what
+# stops Streamlit warning about a default and a session value together.)
+for _k in [k for k in st.session_state.keys() if isinstance(k, str) and k.startswith("sb_")]:
+    st.session_state[_k] = st.session_state[_k]
+
+
+def _seed(key, default, valid):
+    """Give a keyed widget a starting value, replacing a stored one that no
+    longer fits (a contract that has since expired, a range outside new bounds)."""
+    if key not in st.session_state or not valid(st.session_state[key]):
+        st.session_state[key] = default
+
+
+def _stored(key, default, valid):
+    """The remembered value of a control that is not on screen."""
+    v = st.session_state.get(key, default)
+    return v if valid(v) else default
+
+
 with st.sidebar:
     st.markdown("## Settings")
     st.markdown("---")
@@ -1282,9 +1340,17 @@ with st.sidebar:
     df_sidebar      = load_data(commodity, mt)
     avail_months    = sorted(df_sidebar["month"].unique())
     most_active     = _most_active_month(df_sidebar)
-    default_idx     = avail_months.index(most_active) if most_active in avail_months else 0
-    selected_month  = st.selectbox("Contract Month", avail_months, index=default_idx,
-                                   format_func=lambda x: f"{MONTH_NAMES.get(x,x)} ({x})")
+    if most_active not in avail_months:
+        most_active = avail_months[0]
+
+    _mk = f"sb_month_{commodity}"
+    _month_ok = lambda m: m in avail_months
+    if "month" in _show:
+        _seed(_mk, most_active, _month_ok)
+        selected_month = st.selectbox("Contract Month", avail_months, key=_mk,
+                                      format_func=lambda x: f"{MONTH_NAMES.get(x,x)} ({x})")
+    else:
+        selected_month = _stored(_mk, most_active, _month_ok)
 
     df_month    = df_sidebar[df_sidebar["month"] == selected_month].copy()
     today       = pd.Timestamp(date.today())
@@ -1294,38 +1360,67 @@ with st.sidebar:
         st.error("No active contract found.")
         st.stop()
 
-    current_contract = st.selectbox("Current Contract", active_syms)
-    st.markdown("---")
+    _ck = f"sb_contract_{commodity}_{selected_month}"
+    _contract_ok = lambda c: c in active_syms
+    if "contract" in _show:
+        _seed(_ck, active_syms[0], _contract_ok)
+        current_contract = st.selectbox("Current Contract", active_syms, key=_ck)
+    else:
+        current_contract = _stored(_ck, active_syms[0], _contract_ok)
 
     years_all  = sorted(df_month[df_month["ice_symbol"].isin(hist_syms)]["year"].unique())
-    hist_range = st.slider("Historical Years",
-                           int(years_all[0]), int(years_all[-1]),
-                           (int(years_all[0]), int(years_all[-1]))) if years_all else (0,0)
-    st.markdown("---")
+    if years_all:
+        _y0, _y1 = int(years_all[0]), int(years_all[-1])
+        _hk = f"sb_hist_{commodity}_{selected_month}"
+        _hist_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
+                              and _y0 <= r[0] <= r[1] <= _y1)
+        if "hist" in _show:
+            _seed(_hk, (_y0, _y1), _hist_ok)
+            hist_range = st.slider("Historical Years", _y0, _y1, key=_hk)
+        else:
+            hist_range = tuple(_stored(_hk, (_y0, _y1), _hist_ok))
+    else:
+        hist_range = (0, 0)
 
     max_dte      = int(df_month["days_to_expiry"].max())
     max_dte_r    = (max_dte // 10) * 10
     dte_opts_rev = list(range(max_dte_r, -1, -10))
+    _dte_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
+                         and r[0] in dte_opts_rev and r[1] in dte_opts_rev)
     default_upper = 300 if 300 in dte_opts_rev else dte_opts_rev[0]
-    dte_sel      = st.select_slider("Days to Expiry Range (Raw)",
-                                    options=dte_opts_rev,
-                                    value=(default_upper, dte_opts_rev[-1]))
+    _dk = f"sb_dte_{commodity}_{selected_month}"
+    if "dte" in _show:
+        _seed(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
+        dte_sel = st.select_slider("Days to Expiry Range (Raw)", options=dte_opts_rev, key=_dk)
+    else:
+        dte_sel = _stored(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
     dte_range    = [dte_sel[0], dte_sel[1]]   # [high DTE, low DTE] — chart is reversed
 
     default_norm_upper = 150 if 150 in dte_opts_rev else dte_opts_rev[0]
-    norm_dte_sel = st.select_slider("Days to Expiry Range (Normalized)",
-                                    options=dte_opts_rev,
-                                    value=(default_norm_upper, dte_opts_rev[-1]))
+    _nk = f"sb_norm_{commodity}_{selected_month}"
+    if "norm" in _show:
+        _seed(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
+        norm_dte_sel = st.select_slider("Days to Expiry Range (Normalized)",
+                                        options=dte_opts_rev, key=_nk)
+    else:
+        norm_dte_sel = _stored(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
     norm_dte_range = [norm_dte_sel[0], norm_dte_sel[1]]
 
-    st.markdown("---")
-    show_individual = st.toggle("Show individual years", value=False)
+    if "indiv" in _show:
+        _seed("sb_indiv", False, lambda b: isinstance(b, bool))
+        show_individual = st.toggle("Show individual years", key="sb_indiv")
+    else:
+        show_individual = _stored("sb_indiv", False, lambda b: isinstance(b, bool))
 
-    # Drives volume charts that now sit in two different Volume subtabs, so it
+    # Drives volume charts that sit in two different Volume subtabs, so it
     # cannot live inside either one of them.
-    roll_n = st.slider("Rolling Volume Window (days)", min_value=1, max_value=30,
-                       value=10, step=1,
-                       help="Applied to daily volume before plotting")
+    if "roll" in _show:
+        _seed("sb_roll", 10, lambda n: isinstance(n, int) and 1 <= n <= 30)
+        roll_n = st.slider("Rolling Volume Window (days)", min_value=1, max_value=30,
+                           step=1, key="sb_roll",
+                           help="Applied to daily volume before plotting")
+    else:
+        roll_n = _stored("sb_roll", 10, lambda n: isinstance(n, int) and 1 <= n <= 30)
 
     st.markdown("---")
     render_data_freshness(st.sidebar)
@@ -2385,6 +2480,11 @@ NAV_GROUPS = {
     "Volume":        {"Progression": _view_vol, "Board": _view_vol_board},
     "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
 }
+
+# The sidebar's show/hide map is written out separately (it runs before the nav);
+# fail loudly if the two ever disagree rather than quietly showing wrong controls.
+assert {g: list(v) for g, v in NAV_GROUPS.items()} == {g: list(v) for g, v in _VIEW_CONTROLS.items()}, \
+    "_VIEW_CONTROLS is out of step with NAV_GROUPS"
 
 # A relabelled tab (e.g. "Board" -> "All Futures OI") leaves a stale value in
 # a returning browser session's state — both the widget's own key and the
