@@ -8,6 +8,10 @@ loses a leg silently every time a contract rolls off (an expired contract
 needs a `^N` suffix the sheet does not carry), and which under-counts every
 date one exchange is shut while another is open. Both are handled here
 structurally rather than sheet by sheet.
+
+A crop year is only ever compared like-for-like: if any leg of a historical
+year is not in the database, that year is left out and named on the page
+rather than plotted as a smaller basket that reads as a genuinely low year.
 """
 import streamlit as st
 import pandas as pd
@@ -35,12 +39,17 @@ MAX_COMPARE = len(YEAR_COLORS)
 MEAN_COLOR = "#1a1a2e"          # neutral reference line, not a series hue
 BAND_INNER = "rgba(99,149,237,0.28)"
 BAND_OUTER = "rgba(99,149,237,0.10)"
+NAV_ACCENT = C["oi_avg"]
 
+# London white sugar (LSU) lists H, K, Q, V, Z — there is no July. The sugar
+# preset used to ask for LSU K+N+V, so its "N" leg never existed and every year
+# was silently a five-leg basket. Q (August) is London's nearest month to SB's
+# July, so that is what the LSU side takes.
 PRESETS = {
-    "Cocoa — CC+LCC, Z+H":     {"CC": ["Z", "H"], "LCC": ["Z", "H"]},
-    "Sugar — SB+LSU, K+N+V":   {"SB": ["K", "N", "V"], "LSU": ["K", "N", "V"]},
-    "Coffee — KC Z+H, RC X+F": {"KC": ["Z", "H"], "RC": ["X", "F"]},
-    "Cocoa NY only — CC, Z+H": {"CC": ["Z", "H"]},
+    "Cocoa — CC+LCC, Z+H":               {"CC": ["Z", "H"], "LCC": ["Z", "H"]},
+    "Sugar — SB K+N+V, LSU K+Q+V":       {"SB": ["K", "N", "V"], "LSU": ["K", "Q", "V"]},
+    "Coffee — KC Z+H, RC X+F":           {"KC": ["Z", "H"], "RC": ["X", "F"]},
+    "Cocoa NY only — CC, Z+H":           {"CC": ["Z", "H"]},
 }
 
 
@@ -50,38 +59,45 @@ def _cycle_start(months) -> int:
     Z+H is Dec-then-Mar (a 3-month basket), not Mar-then-Dec (9 months), so the
     opening leg is whichever start makes the set span the fewest months. The
     same rule recovers U+Z (Sep opens), K+N+V (May) and X+F (Nov) without
-    asking the user to say which leg is the front."""
+    asking the user to say which leg is the front. A perfectly symmetric set
+    (H+U, both 6 months either way) is a genuine tie, which the Custom basket
+    lets the user settle explicitly."""
     nums = sorted({MONTH_ORDER[m] for m in months})
     return min(nums, key=lambda s: max((n - s) % 12 for n in nums))
 
 
-def basket_legs(basket: dict, crop_year: int):
+def basket_legs(basket: dict, crop_year: int, open_month=None):
     """(commodity, month, delivery_year) for one crop year of the basket.
 
     A leg whose month falls before the opening month has wrapped past December
     into the next calendar year — that is what makes Z25+H26 a single crop
     year, and what lets KC Z+H and RC X+F sit in one basket together."""
-    start = _cycle_start([m for ms in basket.values() for m in ms])
+    all_months = [m for ms in basket.values() for m in ms]
+    start = MONTH_ORDER[open_month] if open_month in all_months else _cycle_start(all_months)
     return [(c, m, crop_year + (0 if MONTH_ORDER[m] >= start else 1))
             for c, ms in basket.items() for m in ms], start
 
 
 @st.cache_data(max_entries=400, show_spinner=False)
-def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = True):
+def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = True,
+                    open_month=None):
     """One crop year of basket OI, densified onto an integer days-to-expiry grid.
 
     The x-axis is days to the *back* leg's expiry — for Z+H that is "time to H
     exp", which is how the desk reads it — and the series stops when the front
     leg expires, because past that point the basket is no longer the basket
-    that was selected. Returns (series, meta) or None."""
+    that was selected. Returns (series, meta) or None; meta["missing"] names
+    any leg with no data at all (the year is then a smaller basket)."""
     basket = {c: list(ms) for c, ms in basket_key}
-    legs, _ = basket_legs(basket, crop_year)
+    legs, _ = basket_legs(basket, crop_year, open_month)
 
-    frames = []
+    frames, missing = [], []
     for comm, m, y in legs:
         df = load_data(comm, mtimes.get(comm, 0.0))
         sub = df[(df["month"] == m) & (df["year"] == y)]
-        if not sub.empty:
+        if sub.empty:
+            missing.append(f"{comm} {m}{y % 100:02d}")
+        else:
             frames.append(sub[["Date", "ice_symbol", "open_interest", "LTD"]])
     if not frames:
         return None
@@ -138,28 +154,72 @@ def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = Tr
     dense = pd.Series(np.interp(grid, s.index.values, s.values), index=grid)
 
     return dense, dict(back_ltd=back_ltd, front_ltd=front_ltd,
-                       legs=list(piv.columns), filled=filled, trimmed=trimmed,
+                       legs=list(piv.columns), missing=missing,
+                       filled=filled, trimmed=trimmed,
                        complete=front_ltd < pd.Timestamp(date.today()),
                        last_date=total.index.max())
 
 
-def crop_label(basket: dict, crop_year: int) -> str:
+def crop_label(basket: dict, crop_year: int, open_month=None) -> str:
     """"24/25" when the basket wraps a calendar year, plain "25" when it does not."""
-    legs, _ = basket_legs(basket, crop_year)
+    legs, _ = basket_legs(basket, crop_year, open_month)
     wraps = any(y != crop_year for _, _, y in legs)
     return (f"{crop_year % 100:02d}/{(crop_year + 1) % 100:02d}" if wraps
             else f"{crop_year % 100:02d}")
 
 
+def _min_obs(n_years: int) -> int:
+    """Fewest years that must reach a given DTE before a mean/band is drawn
+    there. Years are not equally long — the front-to-back gap differs from
+    year to year — so at the far end only a couple of them have data, and a
+    mean of two years steps every time one of them starts. Needs 60% of the
+    selected years, never fewer than 3 (or all of them, if fewer are chosen)."""
+    return min(n_years, max(3, int(np.ceil(0.6 * n_years))))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════════════════════
-st.markdown("""<style>
-[data-testid="stMetricLabel"] { font-size:0.70rem !important; color:#888; }
-[data-testid="stMetricValue"] { font-size:1.05rem !important; font-weight:600; }
-section[data-testid="stSidebar"] h3 { font-size:0.82rem; font-weight:600;
-    color:#6b7280; letter-spacing:.02em; margin:0 0 .3rem; }
+st.markdown(f"""<style>
+section[data-testid="stSidebar"] h3 {{ font-size:0.82rem; font-weight:600;
+    color:#6b7280; letter-spacing:.02em; margin:0 0 .3rem; }}
+.kpirow{{display:flex;flex-wrap:wrap;gap:0;border:1px solid #e5e7eb;border-radius:6px;
+  background:#fafbfc;margin:4px 0 10px;overflow:hidden;width:fit-content}}
+.kpichip{{padding:4px 12px;border-right:1px solid #e5e7eb;white-space:nowrap;font-size:.72rem}}
+.kpichip:last-child{{border-right:none}}
+.kpil{{color:#9ca3af;font-size:.62rem;text-transform:uppercase;letter-spacing:.03em;margin-right:4px}}
+.kpiv{{font-weight:700;color:#1a1a1a}}
+/* Same underline tab strip as the OI Progression page's view row. */
+.st-key-nav_view {{ margin-top:-.35rem; border-bottom:1px solid #e3e7ee; gap:0; }}
+.st-key-nav_view [data-testid="stButtonGroup"] > div {{ gap:2px; flex-wrap:wrap; }}
+.st-key-nav_view button[kind^="segmented_control"] {{
+  border:none !important; border-radius:6px 6px 0 0 !important; margin:0 0 -1px 0 !important;
+  padding:.45rem .9rem !important; min-height:0 !important;
+  background:transparent !important; box-shadow:none !important;
+  border-bottom:2px solid transparent !important;
+  transition:color .15s ease, border-color .15s ease, background .15s ease; }}
+.st-key-nav_view button[kind^="segmented_control"] p {{
+  font-size:.81rem !important; font-weight:500 !important; color:#6b7280 !important; }}
+.st-key-nav_view button[kind="segmented_control"]:hover {{ background:#f5f6f9 !important; }}
+.st-key-nav_view button[kind="segmented_control"]:hover p {{ color:#1f2937 !important; }}
+.st-key-nav_view button[kind="segmented_controlActive"] {{ border-bottom:2px solid {NAV_ACCENT} !important; }}
+.st-key-nav_view button[kind="segmented_controlActive"] p {{ color:{NAV_ACCENT} !important; font-weight:600 !important; }}
 </style>""", unsafe_allow_html=True)
+
+
+def _kpi_row(items):
+    """items = (label, value[, delta]). One compact strip of chips."""
+    chips = []
+    for it in items:
+        delta = it[2] if len(it) > 2 else None
+        dh = ""
+        if delta:
+            col = "#dc2626" if str(delta).strip().startswith("-") else "#16a34a"
+            dh = f"<b style='color:{col};font-weight:700;margin-left:4px'>{delta}</b>"
+        chips.append(f"<span class='kpichip'><span class='kpil'>{it[0]}</span> "
+                     f"<span class='kpiv'>{it[1]}</span>{dh}</span>")
+    st.markdown(f"<div class='kpirow'>{''.join(chips)}</div>", unsafe_allow_html=True)
+
 
 MTIMES = {c: _mtime(c) for c in COMMODITIES}
 
@@ -171,6 +231,12 @@ def _months_traded(commodity: str, mtime: float) -> list:
 
 
 # ── Sidebar: basket ───────────────────────────────────────────────────────────
+# A renamed preset leaves the old name in a returning session's state, which a
+# selectbox will not silently recover from.
+if st.session_state.get("seas_preset") not in (None, *PRESETS, "Custom"):
+    del st.session_state["seas_preset"]
+
+open_month = None
 with st.sidebar:
     st.markdown("### Basket")
     preset_name = st.selectbox("Preset", list(PRESETS) + ["Custom"], index=0,
@@ -187,6 +253,16 @@ with st.sidebar:
                                     format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
             if picked:
                 basket[mk] = picked
+        all_m = sorted({m for ms in basket.values() for m in ms}, key=MONTH_ORDER.get)
+        if len(all_m) > 1:
+            pick = st.selectbox(
+                "Season opens with", ["Auto"] + all_m, index=0,
+                key=f"seas_open_{''.join(all_m)}",
+                format_func=lambda m: m if m == "Auto" else f"{m} ({MONTH_NAMES[m][:3]})",
+                help="Auto opens the season on whichever month makes the basket span "
+                     "the fewest months. Set it explicitly only for a symmetric basket "
+                     "(e.g. H+U), where either end is equally 'first'.")
+            open_month = None if pick == "Auto" else pick
     else:
         basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
 
@@ -197,16 +273,30 @@ if not basket:
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
 
 # ── Build every crop year the data supports ───────────────────────────────────
-built, meta = {}, {}
+built_all, meta_all = {}, {}
 for cy in range(2009, date.today().year + 2):
-    r = build_crop_year(basket_key, cy, MTIMES, stop_at_front=True)
+    r = build_crop_year(basket_key, cy, MTIMES, True, open_month)
     if r is None:
         continue
-    lbl = crop_label(basket, cy)
-    built[lbl], meta[lbl] = r[0], r[1]
+    lbl = crop_label(basket, cy, open_month)
+    built_all[lbl], meta_all[lbl] = r[0], r[1]
+
+if not built_all:
+    st.error("No contracts found for that basket.")
+    st.stop()
+
+# A finished year with a leg missing is a smaller basket, not a low year: the
+# database opens at the first contract still alive in 2011, so the earliest
+# seasons lack their opening legs (cocoa 10/11 has no Dec-2010 contract and
+# plotted at half the true level while being labelled complete). Leave those
+# out and say so. A year still in progress with a leg not yet listed is kept —
+# it is the live season — but flagged below.
+excluded = {l: m["missing"] for l, m in meta_all.items() if m["missing"] and m["complete"]}
+built = {l: s for l, s in built_all.items() if l not in excluded}
+meta = {l: meta_all[l] for l in built}
 
 if not built:
-    st.error("No contracts found for that basket.")
+    st.error("Every crop year for that basket is missing at least one leg.")
     st.stop()
 
 labels_all = list(built)
@@ -224,13 +314,15 @@ current    = (min(incomplete, key=lambda l: meta[l]["front_ltd"]) if incomplete
 # drops entries missing from the new options — so switching from cocoa (labels
 # like "21/22") to sugar ("27") silently emptied both lists instead of falling
 # back to the defaults. A per-basket key gives each basket its own widget.
-bsig = "_".join(f"{c}{''.join(ms)}" for c, ms in basket_key)
+bsig = "_".join(f"{c}{''.join(ms)}" for c, ms in basket_key) + (f"_{open_month}" if open_month else "")
+
+dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25.0)) * 25, 225)
 
 with st.sidebar:
     st.markdown("### Years")
     default_cmp = [l for l in complete[-MAX_COMPARE:] if l != current]
     cmp_years = st.multiselect(
-        "Plot", labels_all, default=default_cmp, key=f"seas_cmp_{bsig}",
+        "Plot", complete, default=default_cmp, key=f"seas_cmp_{bsig}",
         help=f"{current} is always drawn. Capped at {MAX_COMPARE} comparison lines — "
              f"past that the colours stop being reliably distinguishable, so read the "
              f"rest off the band.")
@@ -240,14 +332,16 @@ with st.sidebar:
 
     avg_years = st.multiselect(
         "Average & band", complete, default=complete[-5:], key=f"seas_avg_{bsig}",
-        help="Last 5 complete crop years by default, rolling forward on its own so it "
-             "cannot go stale. Incomplete years are excluded — one would make the "
-             "average step where its data runs out.")
+        help="Last 5 complete crop years by default. Incomplete years are excluded — "
+             "one would make the average step where its data runs out.")
 
     st.markdown("### Display")
     show_band = st.checkbox("Percentile band", value=True, key="seas_band",
                             help="25th-75th and min-max across the years above.")
-    max_dte = st.slider("Max days to expiry", 200, 900, 700, step=25, key="seas_max_dte")
+    # Upper bound follows the basket: a K+N+V sugar basket lists ~1,200 days out,
+    # so the old fixed 900 cap cut off the first third of every year.
+    max_dte = st.slider("Max days to expiry", 200, dte_top, min(700, dte_top), step=25,
+                        key=f"seas_max_dte_{bsig}")
     table_step = st.slider("Table step (days)", 1, 14, 7, key="seas_step")
 
     st.markdown("---")
@@ -258,32 +352,68 @@ grid    = np.arange(0, max_dte + 1)
 aligned = pd.DataFrame({l: built[l].reindex(grid) for l in labels_all}, index=grid)
 
 avg_src = aligned[avg_years] if avg_years else pd.DataFrame(index=grid)
+n_avg   = len(avg_years)
 band = pd.DataFrame({
     "mean": avg_src.mean(axis=1, skipna=True),
     "p25":  avg_src.quantile(0.25, axis=1),
     "p75":  avg_src.quantile(0.75, axis=1),
     "lo":   avg_src.min(axis=1, skipna=True),
     "hi":   avg_src.max(axis=1, skipna=True),
-}, index=grid).dropna(how="all")
+}, index=grid)
+if n_avg:
+    band = band.where(avg_src.notna().sum(axis=1) >= _min_obs(n_avg))   # see _min_obs
+band = band.dropna(how="all")
 
 # DTE counts DOWN as time passes, so the latest observation is the series'
 # SMALLEST days-to-expiry. Read it off the full series, not the display grid,
 # which max_dte may have truncated.
 cur_full = built[current]
-cur_dte  = int(cur_full.index.min()) if len(cur_full) else None
-cur_oi   = cur_full.loc[cur_dte] if cur_dte is not None else np.nan
-ref      = band["mean"].get(cur_dte, np.nan) if cur_dte is not None else np.nan
+cur_dte  = int(cur_full.index.min())
+cur_oi   = float(cur_full.loc[cur_dte])
+
+# Reference numbers come from the full series too, so they still work when
+# max_dte has been dragged below the current DTE.
+at_dte  = pd.Series({l: built[l].get(cur_dte, np.nan) for l in avg_years}).dropna()
+mean_ref = float(at_dte.mean()) if n_avg and len(at_dte) >= _min_obs(n_avg) else np.nan
+prev_lbl = complete[-1] if complete else None
+prev_ref = float(built[prev_lbl].get(cur_dte, np.nan)) if prev_lbl else np.nan
+pctile   = (float((at_dte < cur_oi).mean() * 100)
+            if n_avg and len(at_dte) >= max(3, _min_obs(n_avg)) else np.nan)
 
 basket_txt = ", ".join(f"{k} {'+'.join(v)}" for k, v in basket.items())
 st.markdown(f"### {basket_txt}")
 
-kc, _ = st.columns([1, 5])
-kc.metric("As of", meta[current]["last_date"].strftime("%b %d, %Y"))
 
-tab_chart, tab_data = st.tabs(["Chart", "Data"])
+def _pct(a, b):
+    return f"{(a / b - 1) * 100:+.1f}%" if pd.notna(b) and b > 0 else None
+
+
+_kpi_row([
+    (f"{current} OI", f"{cur_oi:,.0f}"),
+    ("As of", meta[current]["last_date"].strftime("%b %d, %Y")),
+    ("DTE", f"{cur_dte}"),
+    (f"vs {n_avg}Y mean", f"{mean_ref:,.0f}" if pd.notna(mean_ref) else "—", _pct(cur_oi, mean_ref)),
+    (f"vs {prev_lbl}", f"{prev_ref:,.0f}" if pd.notna(prev_ref) else "—", _pct(cur_oi, prev_ref)),
+    ("Percentile", f"P{pctile:.0f} of {len(at_dte)} yrs" if pd.notna(pctile) else "—"),
+])
+
+if meta[current]["missing"]:
+    st.warning(f"{current} is missing {', '.join(meta[current]['missing'])} (not listed or not in "
+               f"the database yet), so it is a smaller basket than the years it is compared with.")
+if meta[current]["trimmed"]:
+    st.caption(f"{meta[current]['trimmed']} latest session(s) left out: not every leg has printed "
+               f"open interest for them yet, so the basket total would read short.")
+if excluded:
+    st.caption("Left out because a leg is not in the database (the series would be a smaller "
+               "basket, not a low year): " +
+               "; ".join(f"{l} — {', '.join(v)}" for l, v in excluded.items()))
+
+with st.container(key="nav_view"):
+    view = st.segmented_control("View", ["Chart", "Data"], default="Chart",
+                                key="seas_view", label_visibility="collapsed") or "Chart"
 
 # ── Chart ─────────────────────────────────────────────────────────────────────
-with tab_chart:
+if view == "Chart":
     fig = go.Figure()
     if show_band and not band.empty and avg_years:
         fig.add_trace(go.Scatter(x=band.index, y=band["hi"], mode="lines", name="Min-Max",
@@ -299,7 +429,7 @@ with tab_chart:
                                  fillcolor=BAND_INNER, hoverinfo="skip"))
     if avg_years:
         fig.add_trace(go.Scatter(
-            x=band.index, y=band["mean"], mode="lines", name=f"{len(avg_years)}Y Mean",
+            x=band.index, y=band["mean"], mode="lines", name=f"{n_avg}Y Mean",
             line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
             hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
 
@@ -315,16 +445,25 @@ with tab_chart:
         x=aligned.index, y=aligned[current], mode="lines", name=current,
         line=dict(color=CURRENT_COLOR, width=3),
         hovertemplate="%{y:,.0f}<extra>" + current + "</extra>"))
-    if cur_dte is not None:
+    if cur_dte <= max_dte:
+        fig.add_vline(x=cur_dte, line=dict(color="rgba(0,0,0,0.18)", width=1, dash="dot"))
+        fig.add_trace(go.Scatter(x=[cur_dte], y=[cur_oi], mode="markers",
+                                 marker=dict(color=CURRENT_COLOR, size=9,
+                                             line=dict(color="white", width=1.5)),
+                                 showlegend=False, hoverinfo="skip"))
         fig.add_annotation(x=cur_dte, y=cur_oi, text=f" {current}", showarrow=False,
                            xanchor="left",
                            font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
 
+    # Every year stops when its front leg expires, so nothing is drawn below
+    # ~90 days for a Z+H basket; a plain reversed autorange still ran the axis
+    # to 0 and left a fifth of the plot empty. Stop where the drawn data stops.
+    x_lo = max(0, min(int(built[l].index.min()) for l in set(cmp_years) | {current} | set(avg_years)) - 5)
     fig.update_layout(
         height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
         font=dict(color=C["font"], family="Inter, sans-serif"),
         margin=dict(l=70, r=60, t=20, b=70), hovermode="x unified",
-        xaxis=dict(title="Days to back-leg expiry", autorange="reversed",
+        xaxis=dict(title="Days to back-leg expiry", range=[max_dte, x_lo],
                    showgrid=True, gridcolor=C["grid"], zeroline=False,
                    tickfont=dict(size=11, color=C["font"])),
         yaxis=dict(title="Open Interest", showgrid=True, gridcolor=C["grid"],
@@ -334,11 +473,10 @@ with tab_chart:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # `ref > 0` not just notna: a zero mean would divide by zero here.
-    vs = (f"  ·  {(cur_oi / ref - 1) * 100:+.1f}% vs {len(avg_years)}Y mean"
-          if pd.notna(ref) and ref > 0 else "")
     st.caption(
-        f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry{vs}",
+        f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry. Mean and band are drawn only "
+        f"where at least {_min_obs(n_avg) if n_avg else 0} of the {n_avg} averaged years reach "
+        f"that far out.",
         help="Aligned on days to the back leg's expiry — for Z+H that is time to H "
              "expiry. Each year stops when its front leg expires. Legs are carried "
              "forward across the other exchange's holidays, and a year ends at the "
@@ -391,9 +529,9 @@ def _seas_table_html(frame, style_fn, fmt, cur_label, mean_label):
             f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
-with tab_data:
+if view == "Data":
     tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
-    mean_label = f"{len(avg_years)}Y Mean" if avg_years else None
+    mean_label = f"{n_avg}Y Mean" if avg_years else None
 
     # DTE descending, so the table runs earliest -> latest down the page, the
     # way the desk sheet does. .iloc for both the reversal and the step: purely
@@ -404,9 +542,8 @@ with tab_data:
         # reversed-and-stepped slice of `band`. band is .dropna(how="all")-ed,
         # so when the averaged years carry no data all the way out to max_dte
         # its top row is lower than the table's, and the two step sequences
-        # drift out of phase: the cocoa preset at max_dte=900 tops out at
-        # DTE 814, giving 900,893,886... against 814,807,800... — zero rows in
-        # common, so the whole Mean column rendered as em-dashes.
+        # drift out of phase: they can have zero rows in common, so the whole
+        # Mean column rendered as em-dashes.
         lvl[mean_label] = band["mean"].reindex(lvl.index)
 
     # Change between consecutive rows, i.e. over one table step, not one day —
@@ -423,6 +560,8 @@ with tab_data:
     cmax = float(chg.abs().max().max()) if chg.notna().any().any() else 1.0
     cmax = cmax if cmax > 0 else 1.0
 
+    st.download_button("Download table (CSV)", data=lvl.rename_axis("DTE").to_csv().encode("utf-8"),
+                       file_name=f"oi_seasonal_{bsig}.csv", mime="text/csv")
     st.markdown(SEAS_TBL_CSS, unsafe_allow_html=True)
     t1, t2 = st.columns(2)
     with t1:
