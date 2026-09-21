@@ -684,13 +684,26 @@ def build_spot_oi_data(commodity: str, mtime: float = 0.0) -> dict:
     oi_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="open_interest", aggfunc="last").reindex(columns=all_syms)
     px_piv = df_all.pivot_table(index="Date", columns="ice_symbol", values="settlement", aggfunc="last").reindex(columns=all_syms)
 
-    total_oi = oi_piv.sum(axis=1, min_count=1)
+    total_sum = oi_piv.sum(axis=1, min_count=1)
+    # The market total is LSEG's own whole-market series (TOTCNTROI), not the sum
+    # of the contract columns: that sum is short on any session where an expiring
+    # or illiquid month has no row (KCU6 on 15-17 Sep) and it only starts once
+    # the database holds the whole board. Dates LSEG has no print for stay blank
+    # rather than being backfilled from the sum, which would put a spurious
+    # change on either side of the join. Falls back to the sum if the series has
+    # not been stored.
+    stored = load_total_oi(commodity, _total_oi_mtime())
+    if stored is not None and len(stored) > 30:
+        total_oi, total_source = stored.reindex(oi_piv.index), "LSEG"
+    else:
+        total_oi, total_source = total_sum, "sum"
     spot_sym, spot_oi, spot_price, spot_oi_chg, price_chg_pct, spot_oi_5d = _spot_series(oi_piv, px_piv)
     non_spot_oi = total_oi - spot_oi
 
     return dict(
         syms=live_syms, all_syms=all_syms, ltd_map=ltd_map,
-        oi_piv=oi_piv, px_piv=px_piv, total_oi=total_oi,
+        oi_piv=oi_piv, px_piv=px_piv, total_oi=total_oi, total_sum=total_sum,
+        total_source=total_source,
         spot_sym=spot_sym, spot_oi=spot_oi, spot_price=spot_price, non_spot_oi=non_spot_oi,
         oi_chg=total_oi.diff(), spot_oi_chg=spot_oi_chg, spot_oi_5d=spot_oi_5d,
         price_chg_pct=price_chg_pct,
@@ -794,7 +807,7 @@ def build_spot_summary_html(data: dict) -> str:
         )
 
     spacer = f"<tr class='spacer'><td colspan='{len(syms) + 3}'></td></tr>"
-    header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) + "<th>Total</th><th>Price</th></tr>"
+    header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) + "<th>Total Mkt OI</th><th>Price</th></tr>"
     body = (
         value_row(pd.Timestamp(max_date).strftime("%d/%m/%Y"), max_date)
         + delta_row("+/- day", max_date, prev_day)
@@ -877,7 +890,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     else:
         price_label = f"Price ({price_source})"
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
-              f"<th class='tot-cell'>Total</th><th>{price_label}</th><th>+/-</th>"
+              f"<th class='tot-cell'>Total Mkt OI</th><th>{price_label}</th><th>+/-</th>"
               "<th>OI Chg</th><th>Spot OI +/-</th><th>Non Spot Chg</th><th>Date</th>"
               f"<th>{spread_label}</th><th>OI Chg 5d Avg</th></tr>")
 
@@ -1536,8 +1549,13 @@ def _view_oi():
         tbl["Date"] = tbl["Date"].dt.strftime("%Y-%m-%d")
         st.dataframe(tbl, use_container_width=True, hide_index=True)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOTAL MARKET OI — LSEG whole-market open interest, seasonality + history
+# ═══════════════════════════════════════════════════════════════════════════════
+@st.fragment
+def _view_total_oi():
     # ── Total OI seasonality ──────────────────────────────────────────────────
-    st.markdown("---")
     st.markdown(f"### {COMMODITIES[commodity][1]} — Total OI Seasonality")
     st.caption("Whole-market futures open interest (LSEG TOTCNTROI), by calendar day. Band and "
                "mean use the Historical Years in the sidebar; the current year is never in its "
@@ -2168,6 +2186,12 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
 
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
                "Daily Grid</div>", unsafe_allow_html=True)
+    if spot_data.get("total_source") == "LSEG":
+        st.caption("Total Mkt OI is LSEG's own whole-market series (TOTCNTROI), and OI Chg / Non Spot Chg "
+                   "are taken from it. It can differ slightly from the sum of the contract columns on a "
+                   "day an expiring or illiquid month has no print.")
+    else:
+        st.caption("Total Mkt OI is summed from the contract columns (the stored LSEG total was not found).")
     html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
     if html_spot is None:
         st.info("No data in this window.")
@@ -2306,7 +2330,8 @@ def _view_spreads():
 
 # ── Section nav — dispatch ───────────────────────────────────────────────────
 NAV_GROUPS = {
-    "Open Interest": {"Progression": _view_oi, "All Futures OI": _view_spot,
+    "Open Interest": {"Progression": _view_oi, "Total Market OI": _view_total_oi,
+                      "All Futures OI": _view_spot,
                       "Spread OI": _view_spreads, "Spot OI vs Spread": _view_spot_charts},
     "Volume":        {"Progression": _view_vol, "Board": _view_vol_board},
     "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
