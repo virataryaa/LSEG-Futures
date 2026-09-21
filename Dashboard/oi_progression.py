@@ -1664,7 +1664,7 @@ _MATRIX_CSS = """<style>
   box-shadow:0 1px 2px rgba(15,23,42,.04)}
 .mx-tbl{border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;white-space:nowrap;
   font-family:'Inter',sans-serif;font-size:10.5px;font-variant-numeric:tabular-nums}
-.mx-tbl th,.mx-tbl td{padding:4px 8px;text-align:right;border-bottom:1px solid #f1f2f4}
+.mx-tbl th,.mx-tbl td{padding:4px 8px;text-align:center;border-bottom:1px solid #f1f2f4}
 .mx-tbl tbody tr:last-child td{border-bottom:none}
 .mx-tbl th{position:sticky;top:0;z-index:2;background:#f8f9fb;color:#6b7280;font-weight:600;
   font-size:9.5px;letter-spacing:.06em;text-transform:uppercase}
@@ -1681,7 +1681,7 @@ _MATRIX_CSS = """<style>
 .mx-stat th{background:transparent;font-size:8.5px;font-style:italic;color:#9ca3af;padding:2px 8px;
   text-transform:none;letter-spacing:.02em;border-bottom:1px solid #eef0f3}
 .mx-stat td{padding:2px 8px;border-bottom:none;font-weight:500}
-.mx-stat .yr{background:transparent;font-weight:600;color:#6b7280;border-right:none;text-align:left}
+.mx-stat .yr{background:transparent;font-weight:600;color:#6b7280;border-right:none}
 .mx-stat .pos{color:#16a34a}
 .mx-stat .neg{color:#dc2626}
 .mx-stat .flat{color:#6b7280}
