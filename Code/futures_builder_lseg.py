@@ -346,6 +346,54 @@ def save(comm: str, new: pd.DataFrame, full: bool):
               f"{merged['ice_symbol'].nunique()} contracts")
 
 
+# Rollex is a sibling project with its own builder and schedule; this run only
+# copies what the Futures dashboard needs (price index and its daily return)
+# into Database/ so the deployed app, which cannot see ../Rollex, can read it.
+# Slim on purpose: the full Rollex files are ~3 MB and would add a binary diff
+# to every daily commit.
+ROLLEX_DIR = CODE_DIR.parent.parent / "Rollex" / "Database"
+ROLLEX_PATH = DB_DIR / "rollex.parquet"
+
+
+def sync_rollex() -> int:
+    """Refresh Database/rollex.parquet (Date, commodity, rollex_px, rollex_ret)
+    from the Rollex project's own parquets. Never raises: the price matrix is
+    optional, so a missing file or a bad read is logged and the run goes on.
+    Rewrites the file only when its content changed, to keep commits quiet."""
+    try:
+        frames = []
+        for comm in COMMODITIES:
+            p = ROLLEX_DIR / f"rollex_{comm}.parquet"
+            if not p.exists():
+                log.warning(f"  rollex: {p.name} not found, skipped")
+                continue
+            d = pd.read_parquet(p, columns=["rollex_px", "rollex_ret"])
+            d.index = pd.to_datetime(d.index).normalize()
+            d.index.name = "Date"
+            d = d.astype("float64").reset_index()
+            d.insert(1, "commodity", comm)
+            frames.append(d)
+        if not frames:
+            return 0
+        out = (pd.concat(frames, ignore_index=True)
+                 .drop_duplicates(subset=["commodity", "Date"], keep="last")
+                 .sort_values(["commodity", "Date"]).reset_index(drop=True))
+        if ROLLEX_PATH.exists():
+            try:
+                if pd.read_parquet(ROLLEX_PATH).equals(out):
+                    log.info(f"  rollex: unchanged ({len(out):,} rows, latest {out['Date'].max().date()})")
+                    return 0
+            except Exception:
+                pass                     # unreadable old copy: just replace it
+        out.to_parquet(ROLLEX_PATH, index=False)
+        log.info(f"  rollex: copied {len(out):,} rows for {out['commodity'].nunique()} markets, "
+                 f"latest {out['Date'].max().date()}")
+        return len(out)
+    except Exception as e:
+        log.warning(f"  rollex: sync failed ({type(e).__name__}: {str(e)[:100]})")
+        return 0
+
+
 TOTAL_OI_PATH = DB_DIR / "total_oi.parquet"
 TOTAL_OI_START = "2000-01-01"     # LSEG carries it back to 2000 for the US markets
 
@@ -531,6 +579,9 @@ if __name__ == "__main__":
 
     target_commodities = [c.upper() for c in args.commodities] if args.commodities else COMMODITIES
     today_year = pd.Timestamp.today().year
+
+    # A local file copy: needs no LSEG session, so it runs even if Workspace is down.
+    sync_rollex()
 
     import lseg.data as ld
     ld.open_session()

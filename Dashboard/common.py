@@ -112,6 +112,27 @@ def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     return df[df["open_interest"] > 0].copy()
 
 
+def _rollex_mtime() -> float:
+    p = DB_PATH / "rollex.parquet"
+    return p.stat().st_mtime if p.exists() else 0.0
+
+
+@st.cache_data
+def load_rollex(commodity: str, mtime: float = 0.0):
+    """Daily roll-adjusted return of the desk's Rollex index for one commodity,
+    as a Date-indexed float Series, or None if the builder has not copied it.
+    The builder copies it from the Rollex project on every run."""
+    p = DB_PATH / "rollex.parquet"
+    if not p.exists():
+        return None
+    df = pd.read_parquet(p)
+    df = df[df["commodity"] == commodity]
+    if df.empty:
+        return None
+    s = df.assign(Date=pd.to_datetime(df["Date"])).set_index("Date")["rollex_ret"]
+    return s.astype("float64").sort_index().dropna()
+
+
 def _total_oi_mtime() -> float:
     p = DB_PATH / "total_oi.parquet"
     return p.stat().st_mtime if p.exists() else 0.0

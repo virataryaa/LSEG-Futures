@@ -30,6 +30,13 @@ back to 2011.
   2006-07 and match it exactly from 2009 (Robusta prints single digits in 2008), so
   `common.load_total_oi` starts there and drops isolated one-day glitches (a session
   far off two neighbours that agree, e.g. CT 24 Dec 2007). The stored file stays raw.
+- **`Database/rollex.parquet`** — the desk's Rollex price index (`rollex_px`) and its daily
+  roll-adjusted return (`rollex_ret`) for all 7 markets, `Date, commodity, rollex_px,
+  rollex_ret`, 2010 onward. **A copy, not a source:** every builder run (`sync_rollex`)
+  refreshes it from `../Rollex/Database`, because the deployed dashboard cannot see the
+  sibling folder; Rollex's own builder runs on its own schedule, so the copy is only as
+  fresh as that. Slim on purpose (~0.6 MB vs 3.1 MB for the full files) and rewritten only
+  when its content changes. Feeds the Monthly Rollex Price Change matrix.
 - **`Dashboard/oi_progression.py`** — copied from the ICE source (pure parquet
   consumer, zero API calls). OI Progression, Recap, Charts, Spreads, Volume,
   Flow and grid tabs, DTE-aligned seasonality banding. Single-commodity by

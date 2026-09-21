@@ -13,7 +13,8 @@ st.set_page_config(page_title="Futures Dashboard", page_icon="📈", layout="wid
 
 try:
     from common import (DB_PATH, COMMODITIES, MONTH_NAMES, MONTH_ORDER, C,
-                        _mtime, _total_oi_mtime, load_data, load_enriched, load_total_oi,
+                        _mtime, _total_oi_mtime, _rollex_mtime, load_data, load_enriched, load_total_oi,
+                    load_rollex,
                         _safe, _oi_heatmap_style, _bar_style,
                         _diverging_bar_style, _oi_chg_style, _vol_style,
                         render_data_freshness)
@@ -26,7 +27,8 @@ except ImportError:
     import common
     importlib.reload(common)
     from common import (DB_PATH, COMMODITIES, MONTH_NAMES, MONTH_ORDER, C,
-                        _mtime, _total_oi_mtime, load_data, load_enriched, load_total_oi,
+                        _mtime, _total_oi_mtime, _rollex_mtime, load_data, load_enriched, load_total_oi,
+                    load_rollex,
                         _safe, _oi_heatmap_style, _bar_style,
                         _diverging_bar_style, _oi_chg_style, _vol_style,
                         render_data_freshness)
@@ -1655,6 +1657,51 @@ def _view_oi():
         st.dataframe(tbl, use_container_width=True, hide_index=True)
 
 
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+_MATRIX_CSS = """<style>
+.moi-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
+.moi-tbl{border-collapse:collapse;font-size:10px;font-family:'Inter',sans-serif;white-space:nowrap;width:100%}
+.moi-tbl th,.moi-tbl td{padding:3px 7px;text-align:right;border-bottom:1px solid #f0f0f0}
+.moi-tbl th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}
+.moi-tbl .yr{position:sticky;left:0;background:#fff;text-align:center;font-weight:600;z-index:1;
+  box-shadow:inset -2px 0 0 0 #374151}
+.moi-tbl th.yr{background:#fafafa;z-index:3}
+.moi-tbl .net{font-weight:700;box-shadow:inset 2px 0 0 0 #374151}
+.moi-tbl .mtd{font-style:italic}
+.moi-tbl tbody tr:hover td{background-color:rgba(10,36,99,.05)}
+</style>"""
+
+
+def _month_matrix_html(mat, year_net, years, last_date, fmt) -> str:
+    """Years down, months across, a green/red diverging bar in every cell and a
+    year column on its own scale. `mat` is years x 1..12, `year_net` a Series by
+    year, `fmt(v)` the cell text. The month `last_date` falls in is italic when
+    it is still in progress. Shared by the OI-change and Rollex-price matrices
+    so the two read identically."""
+    mat, year_net = mat.loc[years], year_net.loc[years]
+    partial = (last_date + pd.offsets.MonthEnd(0) - last_date).days > 3
+    vmax = _safe(np.nanmax(np.abs(mat.to_numpy()))) if mat.notna().any().any() else 1.0
+    ymax = _safe(np.nanmax(np.abs(year_net.to_numpy()))) if year_net.notna().any() else 1.0
+
+    def cell(v, scale, extra=""):
+        if pd.isna(v):
+            return f"<td class='{extra}'></td>"
+        return f"<td class='{extra}' style='{_oi_chg_style(v, scale)}'>{fmt(v)}</td>"
+
+    head = ("<tr><th class='yr'>Year</th>" + "".join(f"<th>{m}</th>" for m in _MONTHS)
+            + "<th class='net'>Year</th></tr>")
+    rows = []
+    for y in years:
+        cells = "".join(
+            cell(mat.at[y, m], vmax,
+                 "mtd" if (partial and y == last_date.year and m == last_date.month) else "")
+            for m in range(1, 13))
+        rows.append(f"<tr><td class='yr'>{y}</td>{cells}{cell(year_net[y], ymax, 'net')}</tr>")
+    return (_MATRIX_CSS + f"<div class='moi-wrap'><table class='moi-tbl'><thead>{head}</thead>"
+            f"<tbody>{''.join(rows)}</tbody></table></div>")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TOTAL MARKET OI — LSEG whole-market open interest, seasonality + history
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1791,39 +1838,28 @@ def _view_total_oi():
         _yrs = sorted(mat.index)
         _yrs = _yrs[-10:] if _scope.startswith("Last") else _yrs       # ascending: latest at the bottom
         mat, year_net = mat.loc[_yrs], year_net.loc[_yrs]
-        _last = ts.index[-1]
-        _partial = (_last + pd.offsets.MonthEnd(0) - _last).days > 3
-        _vmax = _safe(np.nanmax(np.abs(mat.to_numpy()))) if mat.notna().any().any() else 1.0
-        _ymax = _safe(np.nanmax(np.abs(year_net.to_numpy()))) if year_net.notna().any() else 1.0
+        st.markdown(_month_matrix_html(mat, year_net, _yrs, ts.index[-1], lambda v: f"{v:+,.0f}"),
+                    unsafe_allow_html=True)
 
-        def _cell(v, vmax, extra=""):
-            if pd.isna(v):
-                return f"<td class='{extra}'></td>"
-            return f"<td class='{extra}' style='{_oi_chg_style(v, vmax)}'>{v:+,.0f}</td>"
-
-        _mn = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        _head = ("<tr><th class='yr'>Year</th>" + "".join(f"<th>{m}</th>" for m in _mn)
-                 + "<th class='net'>Year</th></tr>")
-        _rows = []
-        for y in _yrs:
-            cells = "".join(
-                _cell(mat.at[y, m], _vmax,
-                      "mtd" if (_partial and y == _last.year and m == _last.month) else "")
-                for m in range(1, 13))
-            _rows.append(f"<tr><td class='yr'>{y}</td>{cells}{_cell(year_net[y], _ymax, 'net')}</tr>")
-        st.markdown("""<style>
-.moi-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
-.moi-tbl{border-collapse:collapse;font-size:10px;font-family:'Inter',sans-serif;white-space:nowrap;width:100%}
-.moi-tbl th,.moi-tbl td{padding:3px 7px;text-align:right;border-bottom:1px solid #f0f0f0}
-.moi-tbl th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}
-.moi-tbl .yr{position:sticky;left:0;background:#fff;text-align:center;font-weight:600;z-index:1;
-  box-shadow:inset -2px 0 0 0 #374151}
-.moi-tbl th.yr{background:#fafafa;z-index:3}
-.moi-tbl .net{font-weight:700;box-shadow:inset 2px 0 0 0 #374151}
-.moi-tbl .mtd{font-style:italic}
-.moi-tbl tbody tr:hover td{background-color:rgba(10,36,99,.05)}
-</style>""" + f"<div class='moi-wrap'><table class='moi-tbl'><thead>{_head}</thead>"
-                    f"<tbody>{''.join(_rows)}</tbody></table></div>", unsafe_allow_html=True)
+        # ── Monthly Rollex price change matrix ────────────────────────────────
+        rx = load_rollex(commodity, _rollex_mtime())
+        if rx is not None and len(rx) > 60:
+            st.markdown(f"#### Monthly Rollex Price Change : {COMMODITIES[commodity][1]} "
+                        f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {rx.index[-1]:%d %b %Y}</span>",
+                        unsafe_allow_html=True)
+            # A month's change is its daily roll-adjusted returns compounded, so a
+            # roll never shows up as a price move. The series starts mid-month
+            # (its first day has no return), so that first month is left blank.
+            mret = (1 + rx).groupby([rx.index.year, rx.index.month]).prod() - 1
+            pm = mret.unstack(level=1).reindex(columns=range(1, 13))
+            pm.loc[rx.index[0].year, rx.index[0].month] = np.nan
+            p_year = (1 + pm).prod(axis=1, skipna=True) - 1          # compounded, not summed
+            p_year[pm.notna().sum(axis=1) == 0] = np.nan
+            _pyrs = sorted(pm.index)
+            _pyrs = _pyrs[-10:] if _scope.startswith("Last") else _pyrs
+            st.markdown(_month_matrix_html(pm, p_year, _pyrs, rx.index[-1],
+                                           lambda v: f"{v * 100:+.1f}%"),
+                        unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
