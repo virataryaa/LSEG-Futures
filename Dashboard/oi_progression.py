@@ -1697,9 +1697,10 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
     by the OI-change and Rollex-price matrices so the two read identically.
 
     Below the table sits a separate, quieter Statistics block - Mean, Std Dev and
-    Mean/Std - over the years shown EXCEPT the latest (it is part-way through and
+    ICV - over the years shown EXCEPT the latest (it is part-way through and
     would drag the average with a part-month). Std is the sample standard
-    deviation (n-1); Mean/Std is mean over std, a signal-to-noise (Sharpe-style)
+    deviation (n-1); ICV (inverse coefficient of variation, the name the Rollex
+    dashboard uses) is mean over std, a signal-to-noise (Sharpe-style)
     ratio: how consistent the tendency is, not just how big. The block uses
     coloured text only (green up, red down; the spread, which is never negative,
     stays grey) and shares the table's fixed column widths so months line up.
@@ -1759,7 +1760,7 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
                 f"<table class='mx-tbl mx-stat'>{cols}<thead>{shead}</thead><tbody>"
                 + srow("Mean", m_mean, y_mean, "mean")
                 + srow("Std Dev", m_std, y_std, "std")
-                + srow("Mean/Std", m_rat, y_rat, "ratio")
+                + srow("ICV", m_rat, y_rat, "ratio")
                 + "</tbody></table></div>")
     return out
 
