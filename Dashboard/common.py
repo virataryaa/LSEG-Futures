@@ -117,7 +117,34 @@ def load_total_oi(commodity: str, mtime: float = 0.0):
     if df.empty:
         return None
     s = df.assign(Date=pd.to_datetime(df["Date"])).set_index("Date")["total_oi"]
-    return s.astype("float64").sort_index()
+    return _clean_total_oi(s.astype("float64").sort_index())
+
+
+TOTAL_OI_RELIABLE_FROM = "2009-01-01"
+
+
+def _clean_total_oi(s: pd.Series) -> pd.Series:
+    """LSEG's whole-market series, restricted to where it can be trusted.
+
+    Two problems in the raw series, both checked rather than assumed:
+    - Before 2009 it is not reliable. KC's Tuesday values sit a median 25-30%
+      off the CFTC futures-only total in 2006-07 (400k against a true ~120k in
+      2007) and 85% of 2008 matches, then it agrees exactly from 2009 on
+      (100% of Tuesdays 2009-2011, and 2011+ also equals the per-contract sum).
+      Other markets show the same regime of wild swings before then, and
+      Robusta prints single digits in 2008. So the series starts in 2009.
+    - Isolated one-day glitches: a single session printing far off two
+      neighbours that agree with each other (CT 24 Dec 2007 224k -> 90k ->
+      224k, CC 13 May 2010 130k -> 183k -> 130k), typically on a holiday when
+      only some contracts print. Such a day is dropped, not smoothed, so it
+      shows as a gap rather than an invented number. A real move never looks
+      like this: it persists into the next session.
+    """
+    s = s[s.index >= TOTAL_OI_RELIABLE_FROM]
+    prev, nxt = s.shift(1), s.shift(-1)
+    neighbours_agree = (prev / nxt - 1).abs() < 0.10
+    off_both = ((s / prev - 1).abs() > 0.15) & ((s / nxt - 1).abs() > 0.15)
+    return s[~(neighbours_agree & off_both)]
 
 
 @st.cache_data

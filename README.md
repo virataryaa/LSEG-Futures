@@ -23,9 +23,13 @@ back to 2011.
   day nothing traded, and `volume` is 0 there rather than interpolated.
 - **`Database/total_oi.parquet`** — LSEG's own whole-market futures open
   interest (`TOTCNTROI`, queried on `<root>c2`) per commodity, `Date,
-  commodity, total_oi`, back to 2000 (US) / 2008 (RC). Refreshed every run with
+  commodity, total_oi`, stored raw back to 2000 (US) / 2008 (RC); the dashboard uses it from 2009 only (see below). Refreshed every run with
   a 10-day overlap. Matches the CFTC 'Futures Only' total exactly and is what
   the Total OI charts plot; summing the per-contract table is only the fallback.
+  **Reliable only from 2009:** KC's Tuesday values sit ~25-30% off the CFTC total in
+  2006-07 and match it exactly from 2009 (Robusta prints single digits in 2008), so
+  `common.load_total_oi` starts there and drops isolated one-day glitches (a session
+  far off two neighbours that agree, e.g. CT 24 Dec 2007). The stored file stays raw.
 - **`Dashboard/oi_progression.py`** — copied from the ICE source (pure parquet
   consumer, zero API calls). OI Progression, Recap, Charts, Spreads, Volume,
   Flow and grid tabs, DTE-aligned seasonality banding. Single-commodity by

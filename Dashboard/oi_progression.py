@@ -1650,50 +1650,95 @@ def _view_total_oi():
         # ── Total OI time series ──────────────────────────────────────────────
         st.markdown(f"#### {COMMODITIES[commodity][1]} — Total OI History")
         if seas["source"] == "LSEG":
-            st.caption(f"LSEG whole-market total (TOTCNTROI), from {seas['board_from']:%d %b %Y}.")
+            st.caption(f"LSEG whole-market total (TOTCNTROI), from {seas['board_from']:%d %b %Y}. "
+                       f"Earlier LSEG values are unreliable (KC 2006-07 sit ~30% off the CFTC "
+                       f"total), so the history starts in 2009; isolated one-day glitches are dropped.")
         else:
             st.caption(f"Summed from the per-contract table (the stored LSEG total was not found); "
                        f"starts {seas['board_from']:%d %b %Y}, the first date the database holds "
                        f"every listed contract.")
         ts = seas["series"]
+
+        # The window is applied to the data, not to the axis. A Plotly range
+        # selector only moves the x-axis: with y autoranged over everything (or
+        # pinned to the opening window, as it was) the line ends up cut off or
+        # squashed as soon as the range changes. Slicing here lets y autorange
+        # to exactly what is shown.
+        _RANGES = {"6M": pd.DateOffset(months=6), "1Y": pd.DateOffset(years=1),
+                   "3Y": pd.DateOffset(years=3), "5Y": pd.DateOffset(years=5),
+                   "10Y": pd.DateOffset(years=10), "All": None}
+        rng = st.segmented_control("Range", list(_RANGES), default="5Y", key="totoi_range",
+                                   label_visibility="collapsed") or "5Y"
+        ts_v = ts if _RANGES[rng] is None else ts[ts.index >= ts.index[-1] - _RANGES[rng]]
+
         fig_hist = go.Figure()
-        fig_hist.add_trace(go.Scatter(x=ts.index, y=ts.values, mode="lines", name="Total OI",
+        fig_hist.add_trace(go.Scatter(x=ts_v.index, y=ts_v.values, mode="lines", name="Total OI",
             line=dict(color=C["oi_avg"], width=1.6),
             hovertemplate="%{x|%d %b %Y}<br>Total OI: %{y:,.0f}<extra></extra>"))
-        fig_hist.add_trace(go.Scatter(x=[ts.index[-1]], y=[ts.iloc[-1]], mode="markers",
+        fig_hist.add_trace(go.Scatter(x=[ts_v.index[-1]], y=[ts_v.iloc[-1]], mode="markers",
             marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
             showlegend=False, hoverinfo="skip"))
-        # Opens on the last 5 years: the full history back to 2010 squeezes
-        # the recent moves flat. The range buttons widen it on demand.
-        _end = ts.index[-1]
-        _vis = ts[ts.index >= max(ts.index[0], _end - pd.DateOffset(years=5))]
         fig_hist.update_layout(
             height=420, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
             font=dict(color=C["font"], family="Inter, sans-serif"),
-            xaxis=dict(range=[max(ts.index[0], _end - pd.DateOffset(years=5)), _end],
-                       showgrid=True, gridcolor=C["grid"], zeroline=False,
-                       tickfont=dict(size=11, color=C["font"]),
-                       rangeselector=dict(
-                           buttons=[dict(count=6, label="6M", step="month", stepmode="backward"),
-                                    dict(count=1, label="1Y", step="year", stepmode="backward"),
-                                    dict(count=3, label="3Y", step="year", stepmode="backward"),
-                                    dict(count=5, label="5Y", step="year", stepmode="backward"),
-                                    dict(step="all", label="All")],
-                           bgcolor="#f3f4f6", activecolor="#dbe4f5",
-                           font=dict(size=10, color=C["font"]), x=0, y=1.08)),
-            # Plotly autoranges y over ALL the data, not the opening x-window, so
-            # the 26-year history dragged the axis down to the 2000 level while
-            # only the last 5 years show. Fit the opening window; the range
-            # buttons still re-autorange when the user widens it.
+            xaxis=dict(showgrid=True, gridcolor=C["grid"], zeroline=False,
+                       tickfont=dict(size=11, color=C["font"])),
             yaxis=dict(title="Total Open Interest (contracts)", tickformat=",.0f",
-                       range=[float(_vis.min()) * 0.94, float(_vis.max()) * 1.04],
                        showgrid=True, gridcolor=C["grid"], zeroline=False,
                        tickfont=dict(size=11, color=C["font"])),
             legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
                         bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-            hovermode="x unified", margin=dict(l=70, r=30, t=50, b=60),
+            hovermode="x unified", margin=dict(l=70, r=30, t=20, b=60),
         )
         st.plotly_chart(fig_hist, use_container_width=True)
+
+        # ── Monthly OI change matrix ──────────────────────────────────────────
+        st.markdown(f"#### {COMMODITIES[commodity][1]} — Monthly OI Change")
+        st.caption("Each cell is that month's last total OI minus the previous month's last, in "
+                   "contracts; the bars are green for a build and red for a liquidation, scaled to "
+                   "the largest move in the table. The final column is the year's net change, on "
+                   "its own scale. An italic cell is a month still in progress.")
+        try:
+            me = ts.resample("ME").last()
+        except ValueError:                      # pandas < 2.2 spells it "M"
+            me = ts.resample("M").last()
+        chg_m = me.diff()
+        mat = (pd.DataFrame({"y": chg_m.index.year, "m": chg_m.index.month, "v": chg_m.to_numpy()})
+                 .pivot(index="y", columns="m", values="v").reindex(columns=range(1, 13)))
+        year_net = mat.sum(axis=1, min_count=1)
+        _last = ts.index[-1]
+        _partial = (_last + pd.offsets.MonthEnd(0) - _last).days > 3
+        _vmax = _safe(np.nanmax(np.abs(mat.to_numpy()))) if mat.notna().any().any() else 1.0
+        _ymax = _safe(np.nanmax(np.abs(year_net.to_numpy()))) if year_net.notna().any() else 1.0
+
+        def _cell(v, vmax, extra=""):
+            if pd.isna(v):
+                return f"<td class='{extra}'></td>"
+            return f"<td class='{extra}' style='{_oi_chg_style(v, vmax)}'>{v:+,.0f}</td>"
+
+        _mn = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        _head = ("<tr><th class='yr'>Year</th>" + "".join(f"<th>{m}</th>" for m in _mn)
+                 + "<th class='net'>Year</th></tr>")
+        _rows = []
+        for y in sorted(mat.index, reverse=True):
+            cells = "".join(
+                _cell(mat.at[y, m], _vmax,
+                      "mtd" if (_partial and y == _last.year and m == _last.month) else "")
+                for m in range(1, 13))
+            _rows.append(f"<tr><td class='yr'>{y}</td>{cells}{_cell(year_net[y], _ymax, 'net')}</tr>")
+        st.markdown("""<style>
+.moi-wrap{overflow:auto;max-height:640px;border:1px solid #e5e7eb;border-radius:6px}
+.moi-tbl{border-collapse:collapse;font-size:10px;font-family:'Inter',sans-serif;white-space:nowrap;width:100%}
+.moi-tbl th,.moi-tbl td{padding:3px 7px;text-align:right;border-bottom:1px solid #f0f0f0}
+.moi-tbl th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}
+.moi-tbl .yr{position:sticky;left:0;background:#fff;text-align:center;font-weight:600;z-index:1;
+  box-shadow:inset -2px 0 0 0 #374151}
+.moi-tbl th.yr{background:#fafafa;z-index:3}
+.moi-tbl .net{font-weight:700;box-shadow:inset 2px 0 0 0 #374151}
+.moi-tbl .mtd{font-style:italic}
+.moi-tbl tbody tr:hover td{background-color:rgba(10,36,99,.05)}
+</style>""" + f"<div class='moi-wrap'><table class='moi-tbl'><thead>{_head}</thead>"
+                    f"<tbody>{''.join(_rows)}</tbody></table></div>", unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
