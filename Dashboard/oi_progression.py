@@ -1660,19 +1660,32 @@ def _view_oi():
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 _MATRIX_CSS = """<style>
-.moi-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
-.moi-tbl{border-collapse:collapse;font-size:10px;font-family:'Inter',sans-serif;white-space:nowrap;width:100%}
-.moi-tbl th,.moi-tbl td{padding:3px 7px;text-align:right;border-bottom:1px solid #f0f0f0}
-.moi-tbl th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}
-.moi-tbl .yr{position:sticky;left:0;background:#fff;text-align:center;font-weight:600;z-index:1;
-  box-shadow:inset -2px 0 0 0 #374151}
-.moi-tbl th.yr{background:#fafafa;z-index:3}
-.moi-tbl .net{font-weight:700;box-shadow:inset 2px 0 0 0 #374151}
-.moi-tbl .mtd{font-style:italic}
-.moi-tbl tr.sum td{border-bottom:1px solid #e5e7eb}
-.moi-tbl tr.sum-first td{border-top:2px solid #374151}
-.moi-tbl tr.sum td.yr{font-weight:700}
-.moi-tbl tbody tr:hover td{background-color:rgba(10,36,99,.05)}
+.mx-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:10px;background:#fff;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.mx-tbl{border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;white-space:nowrap;
+  font-family:'Inter',sans-serif;font-size:10.5px;font-variant-numeric:tabular-nums}
+.mx-tbl th,.mx-tbl td{padding:4px 8px;text-align:right;border-bottom:1px solid #f1f2f4}
+.mx-tbl tbody tr:last-child td{border-bottom:none}
+.mx-tbl th{position:sticky;top:0;z-index:2;background:#f8f9fb;color:#6b7280;font-weight:600;
+  font-size:9.5px;letter-spacing:.06em;text-transform:uppercase}
+.mx-tbl .yr{position:sticky;left:0;z-index:1;background:#f8f9fb;text-align:center;font-weight:700;
+  color:#374151;border-right:1px solid #d9dde3}
+.mx-tbl th.yr{z-index:3}
+.mx-tbl .net{font-weight:700;border-left:1px solid #d9dde3}
+.mx-tbl .mtd{font-style:italic}
+.mx-tbl tr.cur td:not(.yr){background-color:rgba(74,127,212,.045)}
+.mx-tbl tbody tr:hover td:not(.yr){background-color:rgba(10,36,99,.05)}
+/* Statistics: a separate, quieter block - small italic figures, coloured text only */
+.mx-stat-cap{margin:10px 0 3px;font-size:10px;font-style:italic;color:#9ca3af;letter-spacing:.02em}
+.mx-stat{font-size:9px;font-style:italic}
+.mx-stat th{background:transparent;font-size:8.5px;font-style:italic;color:#9ca3af;padding:2px 8px;
+  text-transform:none;letter-spacing:.02em;border-bottom:1px solid #eef0f3}
+.mx-stat td{padding:2px 8px;border-bottom:none;font-weight:500}
+.mx-stat .yr{background:transparent;font-weight:600;color:#6b7280;border-right:none;text-align:left}
+.mx-stat .pos{color:#16a34a}
+.mx-stat .neg{color:#dc2626}
+.mx-stat .flat{color:#6b7280}
+.mx-stat .net{border-left:1px solid #eef0f3}
 </style>"""
 
 
@@ -1680,15 +1693,17 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
     """Years down, months across, a green/red diverging bar in every cell and a
     year column on its own scale. `mat` is years x 1..12, `year_net` a Series by
     year, `fmt(v)` the cell text. The month `last_date` falls in is italic when
-    it is still in progress. Shared by the OI-change and Rollex-price matrices
-    so the two read identically.
+    it is still in progress and the latest year's row is lightly shaded. Shared
+    by the OI-change and Rollex-price matrices so the two read identically.
 
-    Three summary rows close the table - Mean, Std Dev and Mean/Std - over the
-    years shown EXCEPT the latest (it is still in progress and would drag the
-    average with a part-month). Std is the sample standard deviation (n-1);
-    Mean/Std is mean over std, a signal-to-noise (Sharpe-style) ratio: how
-    consistent the tendency is, not just how big. `fmt_std` formats the spread
-    (unsigned; defaults to `fmt`)."""
+    Below the table sits a separate, quieter Statistics block - Mean, Std Dev and
+    Mean/Std - over the years shown EXCEPT the latest (it is part-way through and
+    would drag the average with a part-month). Std is the sample standard
+    deviation (n-1); Mean/Std is mean over std, a signal-to-noise (Sharpe-style)
+    ratio: how consistent the tendency is, not just how big. The block uses
+    coloured text only (green up, red down; the spread, which is never negative,
+    stays grey) and shares the table's fixed column widths so months line up.
+    `fmt_std` formats the spread (unsigned; defaults to `fmt`)."""
     mat, year_net = mat.loc[years], year_net.loc[years]
     partial = (last_date + pd.offsets.MonthEnd(0) - last_date).days > 3
     vmax = _safe(np.nanmax(np.abs(mat.to_numpy()))) if mat.notna().any().any() else 1.0
@@ -1699,6 +1714,7 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
             return f"<td class='{extra}'></td>"
         return f"<td class='{extra}' style='{_oi_chg_style(v, scale)}'>{fmt(v)}</td>"
 
+    cols = ("<colgroup><col style='width:64px'>" + "<col>" * 12 + "<col style='width:84px'></colgroup>")
     head = ("<tr><th class='yr'>Year</th>" + "".join(f"<th>{m}</th>" for m in _MONTHS)
             + "<th class='net'>Year</th></tr>")
     rows = []
@@ -1707,9 +1723,12 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
             cell(mat.at[y, m], vmax,
                  "mtd" if (partial and y == last_date.year and m == last_date.month) else "")
             for m in range(1, 13))
-        rows.append(f"<tr><td class='yr'>{y}</td>{cells}{cell(year_net[y], ymax, 'net')}</tr>")
+        cur = " class='cur'" if y == years[-1] else ""
+        rows.append(f"<tr{cur}><td class='yr'>{y}</td>{cells}{cell(year_net[y], ymax, 'net')}</tr>")
+    out = (_MATRIX_CSS + f"<div class='mx-wrap'><table class='mx-tbl'>{cols}<thead>{head}</thead>"
+           f"<tbody>{''.join(rows)}</tbody></table></div>")
 
-    # ── summary rows: latest year left out ───────────────────────────────
+    # ── statistics: latest year left out ─────────────────────────────────
     base = years[:-1]
     if len(base) >= 2:
         fs = fmt_std or fmt
@@ -1719,26 +1738,30 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
         ratio = lambda a, s: a / s if pd.notna(a) and pd.notna(s) and s > 0 else np.nan
         m_rat = pd.Series({m: ratio(m_mean[m], m_std[m]) for m in range(1, 13)})
         y_rat = ratio(y_mean, y_std)
-        rmax = _safe(np.nanmax(np.abs(np.append(m_rat.to_numpy(), y_rat)))) if (m_rat.notna().any() or pd.notna(y_rat)) else 1.0
-        note = f"{base[0]} to {base[-1]}, latest year excluded"
 
-        def srow(label, cls, vals, yval, kind):
-            def c(v, extra=""):
-                if pd.isna(v):
-                    return f"<td class='{extra}'></td>"
-                if kind == "bar":
-                    return f"<td class='{extra}' style='{_oi_chg_style(v, vmax if extra == '' else ymax)}'>{fmt(v)}</td>"
-                if kind == "ratio":
-                    return f"<td class='{extra}' style='{_oi_chg_style(v, rmax)}'>{v:+.2f}</td>"
-                return f"<td class='{extra}'>{fs(v)}</td>"
-            body = "".join(c(vals[m]) for m in range(1, 13))
-            return f"<tr class='sum {cls}'><td class='yr' title='{note}'>{label}</td>{body}{c(yval, 'net')}</tr>"
+        def sc(v, kind, extra=""):
+            if pd.isna(v):
+                return f"<td class='{extra}'></td>"
+            if kind == "std":
+                return f"<td class='flat {extra}'>{fs(v)}</td>"
+            tone = "pos" if v > 0 else ("neg" if v < 0 else "flat")
+            txt = fmt(v) if kind == "mean" else f"{v:+.2f}"
+            return f"<td class='{tone} {extra}'>{txt}</td>"
 
-        rows.append(srow("Mean", "sum-first", m_mean, y_mean, "bar"))
-        rows.append(srow("Std Dev", "", m_std, y_std, "plain"))
-        rows.append(srow("Mean/Std", "", m_rat, y_rat, "ratio"))
-    return (_MATRIX_CSS + f"<div class='moi-wrap'><table class='moi-tbl'><thead>{head}</thead>"
-            f"<tbody>{''.join(rows)}</tbody></table></div>")
+        def srow(label, vals, yval, kind):
+            return (f"<tr><td class='yr'>{label}</td>"
+                    + "".join(sc(vals[m], kind) for m in range(1, 13)) + sc(yval, kind, "net") + "</tr>")
+
+        shead = ("<tr><th class='yr'></th>" + "".join(f"<th>{m}</th>" for m in _MONTHS)
+                 + "<th class='net'>Year</th></tr>")
+        out += (f"<div class='mx-stat-cap'>Statistics · {base[0]} to {base[-1]}</div>"
+                f"<div class='mx-wrap' style='border-color:#f1f2f4;box-shadow:none'>"
+                f"<table class='mx-tbl mx-stat'>{cols}<thead>{shead}</thead><tbody>"
+                + srow("Mean", m_mean, y_mean, "mean")
+                + srow("Std Dev", m_std, y_std, "std")
+                + srow("Mean/Std", m_rat, y_rat, "ratio")
+                + "</tbody></table></div>")
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
