@@ -1652,9 +1652,6 @@ def _view_oi():
 def _view_total_oi():
     # ── Total OI seasonality ──────────────────────────────────────────────────
     st.markdown(f"### {COMMODITIES[commodity][1]} — Total OI Seasonality")
-    st.caption("Whole-market futures open interest (LSEG TOTCNTROI), by calendar day. Band and "
-               "mean use the Historical Years in the sidebar; the current year is never in its "
-               "own band.")
 
     seas = build_total_oi_seasonal(commodity, tuple(hist_range), mt, _total_oi_mtime())
     if seas is None:
@@ -1663,23 +1660,8 @@ def _view_total_oi():
         dense_s, band_s = seas["dense"], seas["band"]
         cy, doy_now, oi_now = seas["cur_year"], seas["last_doy"], seas["last_oi"]
 
-        def _at(frame, col, doy):
-            if frame is None:
-                return np.nan
-            r = frame.loc[frame["doy"] == doy, col]
-            return float(r.iloc[0]) if len(r) else np.nan
-
-        mean_now = _at(band_s, "hist_mean", doy_now)
-        ly_now = _at(dense_s[dense_s["year"] == cy - 1], "total_oi", doy_now)
         n_yrs = len(seas["band_years"])
-        kpi_row([
-            ("Total OI",              f"{oi_now:,.0f}"),
-            ("As of",                 seas["last_date"].strftime("%b %d, %Y")),
-            (f"vs {n_yrs}Y Mean",     f"{mean_now:,.0f}" if pd.notna(mean_now) else "—",
-             f"{(oi_now / mean_now - 1) * 100:+.1f}%" if pd.notna(mean_now) and mean_now > 0 else None),
-            (f"vs {cy - 1} same day", f"{ly_now:,.0f}" if pd.notna(ly_now) else "—",
-             f"{(oi_now / ly_now - 1) * 100:+.1f}%" if pd.notna(ly_now) and ly_now > 0 else None),
-        ])
+        st.markdown(f"**{oi_now:,.0f}** &nbsp;as of {seas['last_date']:%d %b %Y}", unsafe_allow_html=True)
 
         _x0 = pd.Timestamp(f"{_SEAS_REF_YEAR}-01-01")
 
@@ -1744,14 +1726,6 @@ def _view_total_oi():
 
         # ── Total OI time series ──────────────────────────────────────────────
         st.markdown(f"#### {COMMODITIES[commodity][1]} — Total OI History")
-        if seas["source"] == "LSEG":
-            st.caption(f"LSEG whole-market total (TOTCNTROI), from {seas['board_from']:%d %b %Y}. "
-                       f"Earlier LSEG values are unreliable (KC 2006-07 sit ~30% off the CFTC "
-                       f"total), so the history starts in 2009; isolated one-day glitches are dropped.")
-        else:
-            st.caption(f"Summed from the per-contract table (the stored LSEG total was not found); "
-                       f"starts {seas['board_from']:%d %b %Y}, the first date the database holds "
-                       f"every listed contract.")
         ts = seas["series"]
 
         # The window is applied to the data, not to the axis. A Plotly range
@@ -1788,7 +1762,7 @@ def _view_total_oi():
         st.plotly_chart(fig_hist, use_container_width=True)
 
         # ── Monthly OI change matrix ──────────────────────────────────────────
-        st.markdown(f"#### {COMMODITIES[commodity][1]} — Monthly OI Change")
+        st.markdown(f"#### Monthly Total OI Change : {COMMODITIES[commodity][1]}")
         _scope = st.radio("Matrix range", ["Last 10 years (from Jan)", "All history (from Jan)"],
                           horizontal=True, key="totoi_matrix_scope", label_visibility="collapsed")
         try:

@@ -376,7 +376,7 @@ pctile   = (float((at_dte < cur_oi).mean() * 100)
             if n_avg and len(at_dte) >= max(3, _min_obs(n_avg)) else np.nan)
 
 basket_txt = ", ".join(f"{k} {'+'.join(v)}" for k, v in basket.items())
-st.markdown(f"### {basket_txt}")
+st.markdown(f"### {basket_txt} <span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {meta[current]['last_date']:%d %b %Y}</span>", unsafe_allow_html=True)
 
 
 def _pct(a, b):
