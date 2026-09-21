@@ -1669,16 +1669,26 @@ _MATRIX_CSS = """<style>
 .moi-tbl th.yr{background:#fafafa;z-index:3}
 .moi-tbl .net{font-weight:700;box-shadow:inset 2px 0 0 0 #374151}
 .moi-tbl .mtd{font-style:italic}
+.moi-tbl tr.sum td{border-bottom:1px solid #e5e7eb}
+.moi-tbl tr.sum-first td{border-top:2px solid #374151}
+.moi-tbl tr.sum td.yr{font-weight:700}
 .moi-tbl tbody tr:hover td{background-color:rgba(10,36,99,.05)}
 </style>"""
 
 
-def _month_matrix_html(mat, year_net, years, last_date, fmt) -> str:
+def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> str:
     """Years down, months across, a green/red diverging bar in every cell and a
     year column on its own scale. `mat` is years x 1..12, `year_net` a Series by
     year, `fmt(v)` the cell text. The month `last_date` falls in is italic when
     it is still in progress. Shared by the OI-change and Rollex-price matrices
-    so the two read identically."""
+    so the two read identically.
+
+    Three summary rows close the table - Mean, Std Dev and Mean/Std - over the
+    years shown EXCEPT the latest (it is still in progress and would drag the
+    average with a part-month). Std is the sample standard deviation (n-1);
+    Mean/Std is mean over std, a signal-to-noise (Sharpe-style) ratio: how
+    consistent the tendency is, not just how big. `fmt_std` formats the spread
+    (unsigned; defaults to `fmt`)."""
     mat, year_net = mat.loc[years], year_net.loc[years]
     partial = (last_date + pd.offsets.MonthEnd(0) - last_date).days > 3
     vmax = _safe(np.nanmax(np.abs(mat.to_numpy()))) if mat.notna().any().any() else 1.0
@@ -1698,6 +1708,35 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt) -> str:
                  "mtd" if (partial and y == last_date.year and m == last_date.month) else "")
             for m in range(1, 13))
         rows.append(f"<tr><td class='yr'>{y}</td>{cells}{cell(year_net[y], ymax, 'net')}</tr>")
+
+    # ── summary rows: latest year left out ───────────────────────────────
+    base = years[:-1]
+    if len(base) >= 2:
+        fs = fmt_std or fmt
+        m_mean = mat.loc[base].mean(axis=0, skipna=True)                  # per month, over the years shown
+        m_std = mat.loc[base].std(axis=0, ddof=1, skipna=True)
+        y_mean, y_std = year_net.loc[base].mean(), year_net.loc[base].std(ddof=1)
+        ratio = lambda a, s: a / s if pd.notna(a) and pd.notna(s) and s > 0 else np.nan
+        m_rat = pd.Series({m: ratio(m_mean[m], m_std[m]) for m in range(1, 13)})
+        y_rat = ratio(y_mean, y_std)
+        rmax = _safe(np.nanmax(np.abs(np.append(m_rat.to_numpy(), y_rat)))) if (m_rat.notna().any() or pd.notna(y_rat)) else 1.0
+        note = f"{base[0]} to {base[-1]}, latest year excluded"
+
+        def srow(label, cls, vals, yval, kind):
+            def c(v, extra=""):
+                if pd.isna(v):
+                    return f"<td class='{extra}'></td>"
+                if kind == "bar":
+                    return f"<td class='{extra}' style='{_oi_chg_style(v, vmax if extra == '' else ymax)}'>{fmt(v)}</td>"
+                if kind == "ratio":
+                    return f"<td class='{extra}' style='{_oi_chg_style(v, rmax)}'>{v:+.2f}</td>"
+                return f"<td class='{extra}'>{fs(v)}</td>"
+            body = "".join(c(vals[m]) for m in range(1, 13))
+            return f"<tr class='sum {cls}'><td class='yr' title='{note}'>{label}</td>{body}{c(yval, 'net')}</tr>"
+
+        rows.append(srow("Mean", "sum-first", m_mean, y_mean, "bar"))
+        rows.append(srow("Std Dev", "", m_std, y_std, "plain"))
+        rows.append(srow("Mean/Std", "", m_rat, y_rat, "ratio"))
     return (_MATRIX_CSS + f"<div class='moi-wrap'><table class='moi-tbl'><thead>{head}</thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div>")
 
@@ -1838,7 +1877,8 @@ def _view_total_oi():
         _yrs = sorted(mat.index)
         _yrs = _yrs[-10:] if _scope.startswith("Last") else _yrs       # ascending: latest at the bottom
         mat, year_net = mat.loc[_yrs], year_net.loc[_yrs]
-        st.markdown(_month_matrix_html(mat, year_net, _yrs, ts.index[-1], lambda v: f"{v:+,.0f}"),
+        st.markdown(_month_matrix_html(mat, year_net, _yrs, ts.index[-1],
+                                       lambda v: f"{v:+,.0f}", lambda v: f"{v:,.0f}"),
                     unsafe_allow_html=True)
 
         # ── Monthly Rollex price change matrix ────────────────────────────────
@@ -1858,7 +1898,8 @@ def _view_total_oi():
             _pyrs = sorted(pm.index)
             _pyrs = _pyrs[-10:] if _scope.startswith("Last") else _pyrs
             st.markdown(_month_matrix_html(pm, p_year, _pyrs, rx.index[-1],
-                                           lambda v: f"{v * 100:+.1f}%"),
+                                           lambda v: f"{v * 100:+.1f}%",
+                                           lambda v: f"{v * 100:.1f}%"),
                         unsafe_allow_html=True)
 
 
