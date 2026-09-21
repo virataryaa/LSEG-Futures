@@ -1776,7 +1776,9 @@ def _view_total_oi():
         st.plotly_chart(fig_hist, use_container_width=True)
 
         # ── Monthly OI change matrix ──────────────────────────────────────────
-        st.markdown(f"#### Monthly Total OI Change : {COMMODITIES[commodity][1]}")
+        st.markdown(f"#### Monthly Total OI Change : {COMMODITIES[commodity][1]} "
+                    f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {ts.index[-1]:%d %b %Y}</span>",
+                    unsafe_allow_html=True)
         _scope = st.radio("Matrix range", ["Last 10 years (from Jan)", "All history (from Jan)"],
                           horizontal=True, key="totoi_matrix_scope", label_visibility="collapsed")
         try:
