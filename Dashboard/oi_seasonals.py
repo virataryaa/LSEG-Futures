@@ -249,9 +249,7 @@ with st.sidebar:
                                key="seas_preset", label_visibility="collapsed")
     if preset_name == "Custom":
         markets = st.multiselect(
-            "Markets", list(COMMODITIES), default=["KC", "RC"], key="seas_markets",
-            help="Months are picked per market below, so the legs need not match "
-                 "across markets — KC Z+H can sit with RC X+F in one basket.")
+            "Markets", list(COMMODITIES), default=["KC", "RC"], key="seas_markets")
         basket = {}
         for mk in markets:
             picked = st.multiselect(f"{mk} months", _months_traded(mk, MTIMES[mk]),
@@ -265,9 +263,7 @@ with st.sidebar:
                 "Season opens with", ["Auto"] + all_m, index=0,
                 key=f"seas_open_{''.join(all_m)}",
                 format_func=lambda m: m if m == "Auto" else f"{m} ({MONTH_NAMES[m][:3]})",
-                help="Auto opens the season on whichever month makes the basket span "
-                     "the fewest months. Set it explicitly only for a symmetric basket "
-                     "(e.g. H+U), where either end is equally 'first'.")
+                help="Which month starts the season.")
             open_month = None if pick == "Auto" else pick
     else:
         basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
@@ -328,17 +324,13 @@ with st.sidebar:
     st.markdown("### Years")
     default_cmp = [l for l in complete[-MAX_COMPARE:] if l != current]
     cmp_years = st.multiselect(
-        "Plot", complete, default=default_cmp, key=f"seas_cmp_{bsig}",
-        help=f"{current} is always drawn. Capped at {MAX_COMPARE} comparison lines — "
-             f"past that the colours stop being reliably distinguishable, so read the "
-             f"rest off the band.")
+        "Plot", complete, default=default_cmp, key=f"seas_cmp_{bsig}")
     if len(cmp_years) > MAX_COMPARE:
-        st.warning(f"Showing first {MAX_COMPARE}.")
+        st.warning(f"Max {MAX_COMPARE} years.")
         cmp_years = cmp_years[:MAX_COMPARE]
 
     st.markdown("### Display")
-    show_band = st.checkbox("Percentile band", value=True, key="seas_band",
-                            help="25th-75th and min-max across the years above.")
+    show_band = st.checkbox("Percentile band", value=True, key="seas_band")
     # Upper bound follows the basket: a K+N+V sugar basket lists ~1,200 days out,
     # so the old fixed 900 cap cut off the first third of every year.
     max_dte = st.slider("Max days to expiry", 200, dte_top, min(700, dte_top), step=25,
@@ -401,8 +393,7 @@ _kpi_row([
 ])
 
 if meta[current]["missing"]:
-    st.warning(f"{current} is missing {', '.join(meta[current]['missing'])} (not listed or not in "
-               f"the database yet), so it is a smaller basket than the years it is compared with.")
+    st.warning(f"{current} is missing {', '.join(meta[current]['missing'])}, so it reads lower than other years.")
 
 with st.container(key="nav_view"):
     view = st.segmented_control("View", ["Chart", "Data"], default="Chart",
@@ -469,14 +460,8 @@ if view == "Chart":
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    basis = (f"Mean and band use the last {n_avg} complete crop years ({avg_years[0]} to "
-             f"{avg_years[-1]}), drawn only where at least {_min_obs(n_avg)} of them reach that far out."
-             if n_avg else "No complete crop year to average yet.")
-    st.caption(f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry. {basis}",
-        help="Aligned on days to the back leg's expiry — for Z+H that is time to H "
-             "expiry. Each year stops when its front leg expires. Legs are carried "
-             "forward across the other exchange's holidays, and a year ends at the "
-             "last date every one of its legs actually printed.")
+    if n_avg:
+        st.caption(f"Average and band: last {n_avg} years ({avg_years[0]} to {avg_years[-1]}).")
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 SEAS_TBL_CSS = """
@@ -528,10 +513,7 @@ def _seas_table_html(frame, style_fn, fmt, cur_label, mean_label):
 if view == "Data":
     _c, _ = st.columns([1, 3])
     with _c:
-        table_step = st.slider("Days per row", 1, 14, 7, key="seas_step",
-                               help="The table samples the series every N days of days-to-expiry "
-                                    "(7 = one row a week). The OI Change table shows the change "
-                                    "between consecutive rows, i.e. over N days.")
+        table_step = st.slider("Days per row", 1, 14, 7, key="seas_step")
     tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
     mean_label = f"{n_avg}Y Mean" if avg_years else None
 
@@ -578,5 +560,3 @@ if view == "Data":
                                      lambda v: f"{v:+,.0f}", current, mean_label),
                     unsafe_allow_html=True)
 
-    st.caption(f"Bars scaled to the largest absolute change in the table "
-               f"({cmax:,.0f}); green builds, red liquidates.")

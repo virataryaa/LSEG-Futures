@@ -256,9 +256,7 @@ def render_data_freshness(st_target=None):
 
     if not rows:
         return
-    tip = ("Amber = that market has a settlement for a session whose open interest "
-           "has not been published yet. It clears on the builder's next quote top-up."
-           if any_lag else "All markets have open interest through their latest session.")
+    tip = "Amber: OI not out yet." if any_lag else "All up to date."
     tgt.markdown(
         "<div style='font-size:.70rem;font-weight:600;color:#6b7280;"
         "letter-spacing:.02em;margin:.2rem 0 .25rem'>OI AS OF</div>"
