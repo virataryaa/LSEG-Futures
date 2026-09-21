@@ -31,6 +31,21 @@ COMMODITIES = {
     "CT":  ("ct_futures.parquet",  "CT"),
 }
 
+# Contract size in metric tonnes, for turning a lot count into tonnage. From the
+# exchange contract specs: Coffee "C" 37,500 lb, Sugar No.11 112,000 lb, Cotton
+# No.2 50,000 lb (1 lb = 0.45359237 kg); ICE US cocoa, London cocoa and Robusta
+# 10 tonnes; London No.5 white sugar 50 tonnes. A KC lot and an RC lot are
+# different sizes, so lots only add up sensibly across markets once converted.
+LOT_TONNES = {
+    "KC":  37_500 * 0.45359237 / 1000,
+    "RC":  10.0,
+    "CC":  10.0,
+    "LCC": 10.0,
+    "SB":  112_000 * 0.45359237 / 1000,
+    "LSU": 50.0,
+    "CT":  50_000 * 0.45359237 / 1000,
+}
+
 MONTH_NAMES = {
     "F": "January", "G": "February", "H": "March",  "J": "April",
     "K": "May",     "M": "June",     "N": "July",   "Q": "August",

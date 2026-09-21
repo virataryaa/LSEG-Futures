@@ -22,7 +22,7 @@ from datetime import date
 st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
                    layout="wide")
 
-from common import (COMMODITIES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data,
+from common import (COMMODITIES, LOT_TONNES, MONTH_ORDER, C, _mtime, load_data,
                     _oi_heatmap_style, _oi_chg_style, render_data_freshness)
 
 # Categorical line colours, fixed order, never cycled. The dashboard's
@@ -65,28 +65,26 @@ def _cycle_start(months) -> int:
     Z+H is Dec-then-Mar (a 3-month basket), not Mar-then-Dec (9 months), so the
     opening leg is whichever start makes the set span the fewest months. The
     same rule recovers U+Z (Sep opens), K+N+V (May) and X+F (Nov) without
-    asking the user to say which leg is the front. A perfectly symmetric set
-    (H+U, both 6 months either way) is a genuine tie, which the Custom basket
-    lets the user settle explicitly."""
+    asking the user to say which leg is the front."""
     nums = sorted({MONTH_ORDER[m] for m in months})
     return min(nums, key=lambda s: max((n - s) % 12 for n in nums))
 
 
-def basket_legs(basket: dict, crop_year: int, open_month=None):
+def basket_legs(basket: dict, crop_year: int):
     """(commodity, month, delivery_year) for one crop year of the basket.
 
     A leg whose month falls before the opening month has wrapped past December
     into the next calendar year — that is what makes Z25+H26 a single crop
     year, and what lets KC Z+H and RC X+F sit in one basket together."""
     all_months = [m for ms in basket.values() for m in ms]
-    start = MONTH_ORDER[open_month] if open_month in all_months else _cycle_start(all_months)
+    start = _cycle_start(all_months)
     return [(c, m, crop_year + (0 if MONTH_ORDER[m] >= start else 1))
             for c, ms in basket.items() for m in ms], start
 
 
 @st.cache_data(max_entries=400, show_spinner=False)
 def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = True,
-                    open_month=None):
+                    in_tonnes: bool = False):
     """One crop year of basket OI, densified onto an integer days-to-expiry grid.
 
     The x-axis is days to the *back* leg's expiry — for Z+H that is "time to H
@@ -95,7 +93,7 @@ def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = Tr
     that was selected. Returns (series, meta) or None; meta["missing"] names
     any leg with no data at all (the year is then a smaller basket)."""
     basket = {c: list(ms) for c, ms in basket_key}
-    legs, _ = basket_legs(basket, crop_year, open_month)
+    legs, _ = basket_legs(basket, crop_year)
 
     frames, missing = [], []
     for comm, m, y in legs:
@@ -104,7 +102,10 @@ def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = Tr
         if sub.empty:
             missing.append(f"{comm} {m}{y % 100:02d}")
         else:
-            frames.append(sub[["Date", "ice_symbol", "open_interest", "LTD"]])
+            sub = sub[["Date", "ice_symbol", "open_interest", "LTD"]].copy()
+            if in_tonnes:       # convert each leg by ITS market's lot size, then add
+                sub["open_interest"] = sub["open_interest"] * LOT_TONNES[comm]
+            frames.append(sub)
     if not frames:
         return None
 
@@ -166,9 +167,9 @@ def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = Tr
                        last_date=total.index.max())
 
 
-def crop_label(basket: dict, crop_year: int, open_month=None) -> str:
+def crop_label(basket: dict, crop_year: int) -> str:
     """"24/25" when the basket wraps a calendar year, plain "25" when it does not."""
-    legs, _ = basket_legs(basket, crop_year, open_month)
+    legs, _ = basket_legs(basket, crop_year)
     wraps = any(y != crop_year for _, _, y in legs)
     return (f"{crop_year % 100:02d}/{(crop_year + 1) % 100:02d}" if wraps
             else f"{crop_year % 100:02d}")
@@ -230,57 +231,30 @@ def _kpi_row(items):
 MTIMES = {c: _mtime(c) for c in COMMODITIES}
 
 
-@st.cache_data(show_spinner=False)
-def _months_traded(commodity: str, mtime: float) -> list:
-    df = load_data(commodity, mtime)
-    return sorted(df["month"].unique(), key=lambda m: MONTH_ORDER[m])
-
-
 # ── Sidebar: basket ───────────────────────────────────────────────────────────
 # A renamed preset leaves the old name in a returning session's state, which a
 # selectbox will not silently recover from.
-if st.session_state.get("seas_preset") not in (None, *PRESETS, "Custom"):
+if st.session_state.get("seas_preset") not in (None, *PRESETS):
     del st.session_state["seas_preset"]
 
-open_month = None
 with st.sidebar:
     st.markdown("### Basket")
-    preset_name = st.selectbox("Preset", list(PRESETS) + ["Custom"], index=0,
+    preset_name = st.selectbox("Preset", list(PRESETS), index=0,
                                key="seas_preset", label_visibility="collapsed")
-    if preset_name == "Custom":
-        markets = st.multiselect(
-            "Markets", list(COMMODITIES), default=["KC", "RC"], key="seas_markets")
-        basket = {}
-        for mk in markets:
-            picked = st.multiselect(f"{mk} months", _months_traded(mk, MTIMES[mk]),
-                                    default=[], key=f"seas_months_{mk}",
-                                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
-            if picked:
-                basket[mk] = picked
-        all_m = sorted({m for ms in basket.values() for m in ms}, key=MONTH_ORDER.get)
-        if len(all_m) > 1:
-            pick = st.selectbox(
-                "Season opens with", ["Auto"] + all_m, index=0,
-                key=f"seas_open_{''.join(all_m)}",
-                format_func=lambda m: m if m == "Auto" else f"{m} ({MONTH_NAMES[m][:3]})",
-                help="Which month starts the season.")
-            open_month = None if pick == "Auto" else pick
-    else:
-        basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
-
-if not basket:
-    st.info("Pick a market and at least one month in the sidebar.")
-    st.stop()
+    unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
+    in_tonnes = unit == "Tonnes"
+    unit_txt = "tonnes" if in_tonnes else "lots"
+    basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
 
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
 
 # ── Build every crop year the data supports ───────────────────────────────────
 built_all, meta_all = {}, {}
 for cy in range(2009, date.today().year + 2):
-    r = build_crop_year(basket_key, cy, MTIMES, True, open_month)
+    r = build_crop_year(basket_key, cy, MTIMES, True, in_tonnes)
     if r is None:
         continue
-    lbl = crop_label(basket, cy, open_month)
+    lbl = crop_label(basket, cy)
     built_all[lbl], meta_all[lbl] = r[0], r[1]
 
 if not built_all:
@@ -316,7 +290,7 @@ current    = (min(incomplete, key=lambda l: meta[l]["front_ltd"]) if incomplete
 # drops entries missing from the new options — so switching from cocoa (labels
 # like "21/22") to sugar ("27") silently emptied both lists instead of falling
 # back to the defaults. A per-basket key gives each basket its own widget.
-bsig = "_".join(f"{c}{''.join(ms)}" for c, ms in basket_key) + (f"_{open_month}" if open_month else "")
+bsig = "_".join(f"{c}{''.join(ms)}" for c, ms in basket_key)
 
 dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25.0)) * 25, 225)
 
@@ -384,7 +358,7 @@ def _pct(a, b):
 
 
 _kpi_row([
-    (f"{current} OI", f"{cur_oi:,.0f}"),
+    (f"{current} OI, {unit_txt}", f"{cur_oi:,.0f}"),
     ("As of", meta[current]["last_date"].strftime("%b %d, %Y")),
     ("DTE", f"{cur_dte}"),
     (f"vs {n_avg}Y mean", f"{mean_ref:,.0f}" if pd.notna(mean_ref) else "—", _pct(cur_oi, mean_ref)),
@@ -453,7 +427,7 @@ if view == "Chart":
         xaxis=dict(title="Days to back-leg expiry", range=[max_dte, x_lo],
                    showgrid=True, gridcolor=C["grid"], zeroline=False,
                    tickfont=dict(size=11, color=C["font"])),
-        yaxis=dict(title="Open Interest", showgrid=True, gridcolor=C["grid"],
+        yaxis=dict(title=f"Open Interest ({unit_txt})", showgrid=True, gridcolor=C["grid"],
                    zeroline=False, tickformat=",", tickfont=dict(size=11, color=C["font"])),
         legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
                     bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
@@ -545,16 +519,16 @@ if view == "Data":
     cmax = cmax if cmax > 0 else 1.0
 
     st.download_button("Download table (CSV)", data=lvl.rename_axis("DTE").to_csv().encode("utf-8"),
-                       file_name=f"oi_seasonal_{bsig}.csv", mime="text/csv")
+                       file_name=f"oi_seasonal_{bsig}_{unit_txt}.csv", mime="text/csv")
     st.markdown(SEAS_TBL_CSS, unsafe_allow_html=True)
     t1, t2 = st.columns(2)
     with t1:
-        st.markdown('<div class="seas-cap">Open Interest</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="seas-cap">Open Interest ({unit_txt})</div>', unsafe_allow_html=True)
         st.markdown(_seas_table_html(lvl, lambda v: _oi_heatmap_style(v, vmin, vmax),
                                      lambda v: f"{v:,.0f}", current, mean_label),
                     unsafe_allow_html=True)
     with t2:
-        st.markdown(f'<div class="seas-cap">OI Change (per {table_step}d step)</div>',
+        st.markdown(f'<div class="seas-cap">OI Change, {unit_txt} (per {table_step}d step)</div>',
                     unsafe_allow_html=True)
         st.markdown(_seas_table_html(chg, lambda v: _oi_chg_style(v, cmax),
                                      lambda v: f"{v:+,.0f}", current, mean_label),
