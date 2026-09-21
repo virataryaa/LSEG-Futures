@@ -1617,14 +1617,10 @@ def _view_oi():
                    f"every listed contract; earlier dates are missing months that had "
                    f"already expired, so their totals would read far too low.")
         ts = seas["series"]
-        ma = ts.rolling(50, min_periods=50).mean()
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Scatter(x=ts.index, y=ts.values, mode="lines", name="Total OI",
             line=dict(color=C["oi_avg"], width=1.6),
             hovertemplate="%{x|%d %b %Y}<br>Total OI: %{y:,.0f}<extra></extra>"))
-        fig_hist.add_trace(go.Scatter(x=ma.index, y=ma.values, mode="lines", name="50-day MA",
-            line=dict(color="#6b7280", width=1.2, dash="dot"),
-            hovertemplate="50d MA: %{y:,.0f}<extra></extra>"))
         fig_hist.add_trace(go.Scatter(x=[ts.index[-1]], y=[ts.iloc[-1]], mode="markers",
             marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
             showlegend=False, hoverinfo="skip"))
