@@ -12,10 +12,6 @@ current when it can be a session behind.
 
 import pandas as pd
 
-NAMES = {"KC": "Coffee", "CC": "Cocoa", "CT": "Cotton", "SB": "Sugar #11",
-         "RC": "Robusta", "LCC": "Liffe Cocoa", "LSU": "Liffe Sugar"}
-
-
 def _load(db_dir, comm: str):
     p = db_dir / f"{comm.lower()}_futures.parquet"
     if not p.exists():
@@ -73,7 +69,7 @@ def build_oi_detail(db_dir, commodities) -> str:
 
         lag = "" if (px_date is None or px_date <= oi_date) else \
               f"   [settlement to {px_date:%Y-%m-%d} - OI is a session behind]"
-        out.append(f"=== {comm} - {NAMES.get(comm, comm)}  |  OI as of "
+        out.append(f"=== {comm}  |  OI as of "
                    f"{oi_date:%a %d %b %Y}{lag} ===")
 
         rows = _contract_rows(df, oi_date)

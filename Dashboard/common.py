@@ -18,14 +18,17 @@ MONTH_ORDER = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5,  "M": 6,
 
 DB_PATH = Path(__file__).parent.parent / "Database"
 
+# Display order is the desk's: coffee, cocoa, sugar, cotton, each NY then London.
+# The second field is the label used everywhere on screen (selector, titles) --
+# the bare acronym, by request, not the commodity's full name.
 COMMODITIES = {
-    "KC":  ("kc_futures.parquet",  "Coffee (KC)"),
-    "CC":  ("cc_futures.parquet",  "Cocoa (CC)"),
-    "CT":  ("ct_futures.parquet",  "Cotton (CT)"),
-    "SB":  ("sb_futures.parquet",  "Sugar #11 (SB)"),
-    "RC":  ("rc_futures.parquet",  "Robusta (RC)"),
-    "LCC": ("lcc_futures.parquet", "Liffe Cocoa (LCC)"),
-    "LSU": ("lsu_futures.parquet", "Liffe Sugar (LSU)"),
+    "KC":  ("kc_futures.parquet",  "KC"),
+    "RC":  ("rc_futures.parquet",  "RC"),
+    "CC":  ("cc_futures.parquet",  "CC"),
+    "LCC": ("lcc_futures.parquet", "LCC"),
+    "SB":  ("sb_futures.parquet",  "SB"),
+    "LSU": ("lsu_futures.parquet", "LSU"),
+    "CT":  ("ct_futures.parquet",  "CT"),
 }
 
 MONTH_NAMES = {

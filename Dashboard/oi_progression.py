@@ -1697,7 +1697,10 @@ def _view_total_oi():
         st.caption("Each cell is that month's last total OI minus the previous month's last, in "
                    "contracts; the bars are green for a build and red for a liquidation, scaled to "
                    "the largest move in the table. The final column is the year's net change, on "
-                   "its own scale. An italic cell is a month still in progress.")
+                   "its own scale. An italic cell is a month still in progress; the first year of "
+                   "data has no January (there is no earlier month to subtract).")
+        _scope = st.radio("Matrix range", ["Last 10 years (from Jan)", "All history (from Jan)"],
+                          horizontal=True, key="totoi_matrix_scope", label_visibility="collapsed")
         try:
             me = ts.resample("ME").last()
         except ValueError:                      # pandas < 2.2 spells it "M"
@@ -1706,6 +1709,12 @@ def _view_total_oi():
         mat = (pd.DataFrame({"y": chg_m.index.year, "m": chg_m.index.month, "v": chg_m.to_numpy()})
                  .pivot(index="y", columns="m", values="v").reindex(columns=range(1, 13)))
         year_net = mat.sum(axis=1, min_count=1)
+        # Changes are differenced on the FULL series before the view is cut, so
+        # January of the first year shown still has the December before it to
+        # subtract, rather than going blank at the edge of the window.
+        _yrs = sorted(mat.index)
+        _yrs = _yrs[-10:] if _scope.startswith("Last") else _yrs       # ascending: latest at the bottom
+        mat, year_net = mat.loc[_yrs], year_net.loc[_yrs]
         _last = ts.index[-1]
         _partial = (_last + pd.offsets.MonthEnd(0) - _last).days > 3
         _vmax = _safe(np.nanmax(np.abs(mat.to_numpy()))) if mat.notna().any().any() else 1.0
@@ -1720,14 +1729,14 @@ def _view_total_oi():
         _head = ("<tr><th class='yr'>Year</th>" + "".join(f"<th>{m}</th>" for m in _mn)
                  + "<th class='net'>Year</th></tr>")
         _rows = []
-        for y in sorted(mat.index, reverse=True):
+        for y in _yrs:
             cells = "".join(
                 _cell(mat.at[y, m], _vmax,
                       "mtd" if (_partial and y == _last.year and m == _last.month) else "")
                 for m in range(1, 13))
             _rows.append(f"<tr><td class='yr'>{y}</td>{cells}{_cell(year_net[y], _ymax, 'net')}</tr>")
         st.markdown("""<style>
-.moi-wrap{overflow:auto;max-height:640px;border:1px solid #e5e7eb;border-radius:6px}
+.moi-wrap{overflow:auto;border:1px solid #e5e7eb;border-radius:6px}
 .moi-tbl{border-collapse:collapse;font-size:10px;font-family:'Inter',sans-serif;white-space:nowrap;width:100%}
 .moi-tbl th,.moi-tbl td{padding:3px 7px;text-align:right;border-bottom:1px solid #f0f0f0}
 .moi-tbl th{position:sticky;top:0;background:#fafafa;font-weight:600;z-index:2}

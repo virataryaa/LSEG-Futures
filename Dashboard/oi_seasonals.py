@@ -46,10 +46,10 @@ NAV_ACCENT = C["oi_avg"]
 # was silently a five-leg basket. Q (August) is London's nearest month to SB's
 # July, so that is what the LSU side takes.
 PRESETS = {
-    "Cocoa — CC+LCC, Z+H":               {"CC": ["Z", "H"], "LCC": ["Z", "H"]},
-    "Sugar — SB K+N+V, LSU K+Q+V":       {"SB": ["K", "N", "V"], "LSU": ["K", "Q", "V"]},
-    "Coffee — KC Z+H, RC X+F":           {"KC": ["Z", "H"], "RC": ["X", "F"]},
-    "Cocoa NY only — CC, Z+H":           {"CC": ["Z", "H"]},
+    "CC Z+H, LCC Z+H":                   {"CC": ["Z", "H"], "LCC": ["Z", "H"]},
+    "SB K+N+V, LSU K+Q+V":               {"SB": ["K", "N", "V"], "LSU": ["K", "Q", "V"]},
+    "KC Z+H, RC X+F":                    {"KC": ["Z", "H"], "RC": ["X", "F"]},
+    "CC Z+H":                            {"CC": ["Z", "H"]},
 }
 
 
