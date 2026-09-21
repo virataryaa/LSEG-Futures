@@ -1694,11 +1694,6 @@ def _view_total_oi():
 
         # ── Monthly OI change matrix ──────────────────────────────────────────
         st.markdown(f"#### {COMMODITIES[commodity][1]} — Monthly OI Change")
-        st.caption("Each cell is that month's last total OI minus the previous month's last, in "
-                   "contracts; the bars are green for a build and red for a liquidation, scaled to "
-                   "the largest move in the table. The final column is the year's net change, on "
-                   "its own scale. An italic cell is a month still in progress; the first year of "
-                   "data has no January (there is no earlier month to subtract).")
         _scope = st.radio("Matrix range", ["Last 10 years (from Jan)", "All history (from Jan)"],
                           horizontal=True, key="totoi_matrix_scope", label_visibility="collapsed")
         try:

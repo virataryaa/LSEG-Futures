@@ -330,11 +330,6 @@ with st.sidebar:
         st.warning(f"Showing first {MAX_COMPARE}.")
         cmp_years = cmp_years[:MAX_COMPARE]
 
-    avg_years = st.multiselect(
-        "Average & band", complete, default=complete[-5:], key=f"seas_avg_{bsig}",
-        help="Last 5 complete crop years by default. Incomplete years are excluded — "
-             "one would make the average step where its data runs out.")
-
     st.markdown("### Display")
     show_band = st.checkbox("Percentile band", value=True, key="seas_band",
                             help="25th-75th and min-max across the years above.")
@@ -342,12 +337,14 @@ with st.sidebar:
     # so the old fixed 900 cap cut off the first third of every year.
     max_dte = st.slider("Max days to expiry", 200, dte_top, min(700, dte_top), step=25,
                         key=f"seas_max_dte_{bsig}")
-    table_step = st.slider("Table step (days)", 1, 14, 7, key="seas_step")
 
     st.markdown("---")
     render_data_freshness(st.sidebar)
 
 # ── Common DTE grid, mean and band ────────────────────────────────────────────
+# Every complete crop year feeds the mean and band. Incomplete years are left
+# out: one would make the average step where its data runs out.
+avg_years = list(complete)
 grid    = np.arange(0, max_dte + 1)
 aligned = pd.DataFrame({l: built[l].reindex(grid) for l in labels_all}, index=grid)
 
@@ -400,13 +397,6 @@ _kpi_row([
 if meta[current]["missing"]:
     st.warning(f"{current} is missing {', '.join(meta[current]['missing'])} (not listed or not in "
                f"the database yet), so it is a smaller basket than the years it is compared with.")
-if meta[current]["trimmed"]:
-    st.caption(f"{meta[current]['trimmed']} latest session(s) left out: not every leg has printed "
-               f"open interest for them yet, so the basket total would read short.")
-if excluded:
-    st.caption("Left out because a leg is not in the database (the series would be a smaller "
-               "basket, not a low year): " +
-               "; ".join(f"{l} — {', '.join(v)}" for l, v in excluded.items()))
 
 with st.container(key="nav_view"):
     view = st.segmented_control("View", ["Chart", "Data"], default="Chart",
@@ -473,10 +463,10 @@ if view == "Chart":
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.caption(
-        f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry. Mean and band are drawn only "
-        f"where at least {_min_obs(n_avg) if n_avg else 0} of the {n_avg} averaged years reach "
-        f"that far out.",
+    basis = (f"Mean and band use the last {n_avg} complete crop years ({avg_years[0]} to "
+             f"{avg_years[-1]}), drawn only where at least {_min_obs(n_avg)} of them reach that far out."
+             if n_avg else "No complete crop year to average yet.")
+    st.caption(f"{current}: {cur_oi:,.0f} at {cur_dte} days to expiry. {basis}",
         help="Aligned on days to the back leg's expiry — for Z+H that is time to H "
              "expiry. Each year stops when its front leg expires. Legs are carried "
              "forward across the other exchange's holidays, and a year ends at the "
@@ -530,6 +520,12 @@ def _seas_table_html(frame, style_fn, fmt, cur_label, mean_label):
 
 
 if view == "Data":
+    _c, _ = st.columns([1, 3])
+    with _c:
+        table_step = st.slider("Days per row", 1, 14, 7, key="seas_step",
+                               help="The table samples the series every N days of days-to-expiry "
+                                    "(7 = one row a week). The OI Change table shows the change "
+                                    "between consecutive rows, i.e. over N days.")
     tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
     mean_label = f"{n_avg}Y Mean" if avg_years else None
 
