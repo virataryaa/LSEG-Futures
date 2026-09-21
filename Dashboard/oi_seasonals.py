@@ -22,7 +22,18 @@ from datetime import date
 st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
                    layout="wide")
 
-from common import (COMMODITIES, LOT_TONNES, MONTH_ORDER, C, _mtime, load_data,
+try:
+    from common import (COMMODITIES, LOT_TONNES, MONTH_ORDER, C, _mtime, load_data,
+                    _oi_heatmap_style, _oi_chg_style, render_data_freshness)
+except ImportError:
+    # After a deploy the running server can still hold the PREVIOUS common.py in
+    # memory (Streamlit Cloud keeps imported modules across a code update), so a
+    # name added to it since then is "missing" until the app is rebooted. Reload
+    # the module from disk once and import again, instead of showing an error.
+    import importlib
+    import common
+    importlib.reload(common)
+    from common import (COMMODITIES, LOT_TONNES, MONTH_ORDER, C, _mtime, load_data,
                     _oi_heatmap_style, _oi_chg_style, render_data_freshness)
 
 # Categorical line colours, fixed order, never cycled. The dashboard's
