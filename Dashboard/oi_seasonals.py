@@ -46,6 +46,7 @@ CURRENT_COLOR = "#E8470A"
 YEAR_COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#e87ba4",
                "#008300", "#4a3aa7", "#e34948"]
 MAX_COMPARE = len(YEAR_COLORS)
+DEFAULT_PLOT = 4        # comparison years drawn on opening; more can be added, up to MAX_COMPARE
 
 MEAN_COLOR = "#1a1a2e"          # neutral reference line, not a series hue
 BAND_INNER = "rgba(99,149,237,0.28)"
@@ -307,7 +308,7 @@ dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25
 
 with st.sidebar:
     st.markdown("### Years")
-    default_cmp = [l for l in complete[-MAX_COMPARE:] if l != current]
+    default_cmp = [l for l in complete[-DEFAULT_PLOT:] if l != current]
     cmp_years = st.multiselect(
         "Plot", complete, default=default_cmp, key=f"seas_cmp_{bsig}")
     if len(cmp_years) > MAX_COMPARE:
