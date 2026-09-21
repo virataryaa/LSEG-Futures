@@ -700,6 +700,17 @@ def build_spot_oi_data(commodity: str, mtime: float = 0.0) -> dict:
     stored = load_total_oi(commodity, _total_oi_mtime())
     if stored is not None and len(stored) > 30:
         total_oi, total_source = stored.reindex(oi_piv.index), "LSEG"
+        # LSEG's daily history trails the contract quotes by a session: the London
+        # markets' newest OI is filled from the real-time quote (top-up) while
+        # TOTCNTROI for that date is not published yet, which left the newest row's
+        # total blank. Carry LSEG's last level forward by the change in the
+        # contract columns over those dates, so the row has a total and the day's
+        # change is the real flow. Once LSEG publishes the date its own figure
+        # replaces this one on the next refresh.
+        _last = stored.index.max()
+        _tail = oi_piv.index[oi_piv.index > _last]
+        if len(_tail) and _last in total_sum.index and pd.notna(total_sum.loc[_last]):
+            total_oi.loc[_tail] = stored.loc[_last] + (total_sum.loc[_tail] - total_sum.loc[_last])
     else:
         total_oi, total_source = total_sum, "sum"
     spot_sym, spot_oi, spot_price, spot_oi_chg, price_chg_pct, spot_oi_5d = _spot_series(oi_piv, px_piv)
