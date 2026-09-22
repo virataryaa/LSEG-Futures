@@ -1787,11 +1787,10 @@ def _vol_matrix_html(mat, year_col, years, last_date, fmt) -> str:
     `year_col` is the year's own AVERAGE across its months, not a sum (summing
     a volatility level has no meaning). Shares the other matrices' layout
     (fixed columns, sticky year column, latest-year shading) and Statistics
-    block (Mean, Std Dev, ICV); each of those rows gets the same green-low/
-    red-high tint as the main heatmap, scaled to that row's OWN min/max (Mean,
-    Std Dev and ICV live on three different scales) -- unlike the OI/Price
-    matrices' stats, which colour by sign, a vol level has no sign to colour
-    by, only a magnitude, so it tints exactly like the heatmap above it."""
+    block (Mean, Std Dev, ICV). Only Mean gets the heatmap's green-low/red-high
+    tint (scaled to Mean's own min/max, across the row's 12 months + Year); Std
+    Dev and ICV stay plain, so the one conditionally-formatted row is the level
+    the main heatmap itself is showing."""
     mat, year_col = mat.loc[years], year_col.loc[years]
     vals = np.concatenate([mat.to_numpy().ravel(), year_col.to_numpy()])
     vals = vals[~np.isnan(vals.astype(float))]
@@ -1825,16 +1824,18 @@ def _vol_matrix_html(mat, year_col, years, last_date, fmt) -> str:
         m_rat = pd.Series({m: ratio(m_mean[m], m_std[m]) for m in range(1, 13)})
         y_rat = ratio(y_mean, y_std)
 
-        def srow(label, series, yval, kind):
-            row_vals = np.append(series.to_numpy(dtype=float), float(yval) if pd.notna(yval) else np.nan)
-            row_vals = row_vals[~np.isnan(row_vals)]
-            rmin, rmax = (float(row_vals.min()), float(row_vals.max())) if len(row_vals) else (0.0, 1.0)
+        def srow(label, series, yval, kind, tint=False):
+            if tint:
+                row_vals = np.append(series.to_numpy(dtype=float), float(yval) if pd.notna(yval) else np.nan)
+                row_vals = row_vals[~np.isnan(row_vals)]
+                rmin, rmax = (float(row_vals.min()), float(row_vals.max())) if len(row_vals) else (0.0, 1.0)
 
             def sc(v, extra=""):
                 if pd.isna(v):
                     return f"<td class='{extra}'></td>"
                 txt = fmt(v) if kind != "ratio" else f"{v:+.2f}"
-                return f"<td class='{extra}' style='{_rv_color(v, rmin, rmax)}'>{txt}</td>"
+                style = f" style='{_rv_color(v, rmin, rmax)}'" if tint else ""
+                return f"<td class='flat {extra}'{style}>{txt}</td>"
 
             return (f"<tr><td class='yr'>{label}</td>"
                     + "".join(sc(series[m]) for m in range(1, 13)) + sc(yval, "net") + "</tr>")
@@ -1844,7 +1845,7 @@ def _vol_matrix_html(mat, year_col, years, last_date, fmt) -> str:
         out += (f"<div class='mx-stat-cap'>Statistics · {base[0]} to {base[-1]}</div>"
                 f"<div class='mx-wrap' style='border-color:#f1f2f4;box-shadow:none'>"
                 f"<table class='mx-tbl mx-stat'>{cols}<thead>{shead}</thead><tbody>"
-                + srow("Mean", m_mean, y_mean, "mean")
+                + srow("Mean", m_mean, y_mean, "mean", tint=True)
                 + srow("Std Dev", m_std, y_std, "std")
                 + srow("ICV", m_rat, y_rat, "ratio")
                 + "</tbody></table></div>")
