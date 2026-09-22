@@ -1983,28 +1983,12 @@ def _view_total_oi():
                                        lambda v: f"{v:+,.0f}", lambda v: f"{v:,.0f}"),
                     unsafe_allow_html=True)
 
-        # ── Monthly Rollex price change matrix ────────────────────────────────
+        # ── Monthly Realized Volatility + Rollex price change matrices ─────────
+        # RV sits right under the OI change matrix (rather than under the price
+        # one) so it can be read side by side with OI change without scrolling
+        # past the price matrix in between.
         rx = load_rollex(commodity, _rollex_mtime())
         if rx is not None and len(rx) > 60:
-            st.markdown(f"#### Monthly Rollex Price Change : {COMMODITIES[commodity][1]} "
-                        f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {rx.index[-1]:%d %b %Y}</span>",
-                        unsafe_allow_html=True)
-            # A month's change is its daily roll-adjusted returns compounded, so a
-            # roll never shows up as a price move. The series starts mid-month
-            # (its first day has no return), so that first month is left blank.
-            mret = (1 + rx).groupby([rx.index.year, rx.index.month]).prod() - 1
-            pm = mret.unstack(level=1).reindex(columns=range(1, 13))
-            pm.loc[rx.index[0].year, rx.index[0].month] = np.nan
-            p_year = (1 + pm).prod(axis=1, skipna=True) - 1          # compounded, not summed
-            p_year[pm.notna().sum(axis=1) == 0] = np.nan
-            _pyrs = sorted(pm.index)
-            _pyrs = _pyrs[-10:] if _scope.startswith("Last") else _pyrs
-            st.markdown(_month_matrix_html(pm, p_year, _pyrs, rx.index[-1],
-                                           lambda v: f"{v * 100:+.1f}%",
-                                           lambda v: f"{v * 100:.1f}%"),
-                        unsafe_allow_html=True)
-
-            # ── Monthly Realized Volatility matrix ──────────────────────────────
             vol_win = st.radio("RV window", ["20d", "60d"], horizontal=True,
                                key="totoi_vol_win", label_visibility="collapsed")
             win = {"20d": 20, "60d": 60}[vol_win]
@@ -2029,6 +2013,25 @@ def _view_total_oi():
                             unsafe_allow_html=True)
             else:
                 st.info(f"Not enough history for {vol_win} realized volatility yet.")
+
+            # ── Monthly Rollex price change matrix ──────────────────────────────
+            st.markdown(f"#### Monthly Rollex Price Change : {COMMODITIES[commodity][1]} "
+                        f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {rx.index[-1]:%d %b %Y}</span>",
+                        unsafe_allow_html=True)
+            # A month's change is its daily roll-adjusted returns compounded, so a
+            # roll never shows up as a price move. The series starts mid-month
+            # (its first day has no return), so that first month is left blank.
+            mret = (1 + rx).groupby([rx.index.year, rx.index.month]).prod() - 1
+            pm = mret.unstack(level=1).reindex(columns=range(1, 13))
+            pm.loc[rx.index[0].year, rx.index[0].month] = np.nan
+            p_year = (1 + pm).prod(axis=1, skipna=True) - 1          # compounded, not summed
+            p_year[pm.notna().sum(axis=1) == 0] = np.nan
+            _pyrs = sorted(pm.index)
+            _pyrs = _pyrs[-10:] if _scope.startswith("Last") else _pyrs
+            st.markdown(_month_matrix_html(pm, p_year, _pyrs, rx.index[-1],
+                                           lambda v: f"{v * 100:+.1f}%",
+                                           lambda v: f"{v * 100:.1f}%"),
+                        unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
