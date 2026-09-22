@@ -1293,8 +1293,8 @@ _VIEW_CONTROLS = {
         "Progression":       {"month", "contract", "hist", "dte", "norm", "indiv"},
         "Total Market OI":   {"hist", "indiv"},
         "All Futures OI":    set(),
-        "Spread OI":         set(),
         "Spot OI vs Spread": set(),
+        "Spread OI":         set(),
     },
     "Volume": {
         "Progression":       {"month", "contract", "hist", "dte", "indiv", "roll"},
@@ -2557,7 +2557,7 @@ def _view_spreads():
 NAV_GROUPS = {
     "Open Interest": {"Progression": _view_oi, "Total Market OI": _view_total_oi,
                       "All Futures OI": _view_spot,
-                      "Spread OI": _view_spreads, "Spot OI vs Spread": _view_spot_charts},
+                      "Spot OI vs Spread": _view_spot_charts, "Spread OI": _view_spreads},
     "Volume":        {"Progression": _view_vol, "Board": _view_vol_board},
     "OI & Volume":   {"Flow": _view_flow, "Grid": _view_grid},
 }
