@@ -455,13 +455,32 @@ if view == "Chart":
             line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
             hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
 
+    # Every year stops when its front leg expires, so nothing is drawn below
+    # ~90 days for a Z+H basket; a plain reversed autorange still ran the axis
+    # to 0 and left a fifth of the plot empty. Stop where the drawn data stops.
+    # Computed before the trace loop (not just at layout time) so each line's
+    # own end-of-series label can skip itself if that point falls off-screen.
+    x_lo = max(0, min(int(built[l].index.min()) for l in set(cmp_years) | {current} | set(avg_years)) - 5)
+
     for i, lbl in enumerate(cmp_years):
         if lbl == current:
             continue
+        color = YEAR_COLORS[i % len(YEAR_COLORS)]
         fig.add_trace(go.Scatter(
             x=aligned.index, y=aligned[lbl], mode="lines", name=lbl,
-            line=dict(color=YEAR_COLORS[i % len(YEAR_COLORS)], width=2),
+            line=dict(color=color, width=2),
             hovertemplate="%{y:,.0f}<extra>" + lbl + "</extra>"))
+        # A small label at the line's own end -- same treatment `current` gets
+        # below, just quieter (smaller, that year's own line colour) so a
+        # crowded chart of several years can still be read at a glance
+        # without hovering each line to see which is which.
+        s_end = aligned[lbl].dropna()
+        if not s_end.empty:
+            end_dte = int(s_end.index.min())
+            if end_dte >= x_lo:
+                fig.add_annotation(x=end_dte, y=s_end.loc[end_dte], text=f" {lbl}",
+                                   showarrow=False, xanchor="left",
+                                   font=dict(color=color, size=9, family="Inter, sans-serif"))
 
     fig.add_trace(go.Scatter(
         x=aligned.index, y=aligned[current], mode="lines", name=current,
@@ -477,10 +496,6 @@ if view == "Chart":
                            xanchor="left",
                            font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
 
-    # Every year stops when its front leg expires, so nothing is drawn below
-    # ~90 days for a Z+H basket; a plain reversed autorange still ran the axis
-    # to 0 and left a fifth of the plot empty. Stop where the drawn data stops.
-    x_lo = max(0, min(int(built[l].index.min()) for l in set(cmp_years) | {current} | set(avg_years)) - 5)
     fig.update_layout(
         height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
         font=dict(color=C["font"], family="Inter, sans-serif"),
