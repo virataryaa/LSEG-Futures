@@ -23,7 +23,7 @@ st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
                    layout="wide")
 
 try:
-    from common import (COMMODITIES, LOT_TONNES, MONTH_ORDER, C, _mtime, load_data,
+    from common import (COMMODITIES, LOT_TONNES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data,
                     _oi_heatmap_style, _oi_chg_style, render_data_freshness)
 except ImportError:
     # After a deploy the running server can still hold the PREVIOUS common.py in
@@ -33,7 +33,7 @@ except ImportError:
     import importlib
     import common
     importlib.reload(common)
-    from common import (COMMODITIES, LOT_TONNES, MONTH_ORDER, C, _mtime, load_data,
+    from common import (COMMODITIES, LOT_TONNES, MONTH_NAMES, MONTH_ORDER, C, _mtime, load_data,
                     _oi_heatmap_style, _oi_chg_style, render_data_freshness)
 
 # Categorical line colours, fixed order, never cycled. The dashboard's
@@ -241,28 +241,71 @@ def _kpi_row(items):
 
 
 MTIMES = {c: _mtime(c) for c in COMMODITIES}
+_REV_MONTH_ORDER = {v: k for k, v in MONTH_ORDER.items()}
+
+
+@st.cache_data(show_spinner=False)
+def _months_traded(commodity: str, mtime: float) -> list:
+    df = load_data(commodity, mtime)
+    return sorted(df["month"].unique(), key=lambda m: MONTH_ORDER[m])
 
 
 # ── Sidebar: basket ───────────────────────────────────────────────────────────
 # A renamed preset leaves the old name in a returning session's state, which a
 # selectbox will not silently recover from.
-if st.session_state.get("seas_preset") not in (None, *PRESETS):
+if st.session_state.get("seas_preset") not in (None, *PRESETS, "Custom"):
     del st.session_state["seas_preset"]
 
 with st.sidebar:
     st.markdown("### Basket")
-    preset_name = st.selectbox("Preset", list(PRESETS), index=0,
+    preset_name = st.selectbox("Preset", list(PRESETS) + ["Custom"], index=0,
                                key="seas_preset", label_visibility="collapsed")
     unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
     in_tonnes = unit == "Tonnes"
     unit_txt = "tonnes" if in_tonnes else "lots"
-    basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
+    if preset_name == "Custom":
+        # One picker, not a market multiselect feeding a per-market month
+        # multiselect each -- every (market, month) combination is a single
+        # option, so building a basket is one control instead of several that
+        # have to be read together. The season's opening month is still worked
+        # out automatically (_cycle_start, same rule the presets use); there is
+        # no override widget for it, only the caption below the picker, since
+        # the one case it would matter (a perfectly symmetric span like H+U)
+        # is rare enough that a whole extra control for it wasn't worth the
+        # sidebar space or the "what does this do" it invited.
+        _leg_opts = [f"{mk} {m}" for mk in COMMODITIES for m in _months_traded(mk, MTIMES[mk])]
+        _leg_fmt  = {f"{mk} {m}": f"{mk} {m} ({MONTH_NAMES[m][:3]})" for mk in COMMODITIES
+                     for m in _months_traded(mk, MTIMES[mk])}
+        legs = st.multiselect(
+            "Legs", _leg_opts, default=["KC Z", "KC H"], key="seas_legs",
+            format_func=lambda k: _leg_fmt.get(k, k))
+        basket = {}
+        for leg in legs:
+            mk, m = leg.split(" ", 1)
+            basket.setdefault(mk, []).append(m)
+        for mk in basket:
+            basket[mk] = sorted(set(basket[mk]), key=MONTH_ORDER.get)
+        if basket:
+            _open = _REV_MONTH_ORDER[_cycle_start([m for ms in basket.values() for m in ms])]
+            st.caption(f"Season opens {MONTH_NAMES[_open]}.")
+    else:
+        basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
+
+if not basket:
+    st.info("Pick at least one leg in the sidebar.")
+    st.stop()
 
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
 
 # ── Build every crop year the data supports ───────────────────────────────────
 built_all, meta_all = {}, {}
-for cy in range(2009, date.today().year + 2):
+# +3, not +2: a non-wrapping basket's crop-year label doesn't bump to next
+# calendar year the way a wrapping one does (e.g. sugar's "27" already IS
+# the season trading now), so +2 stopped one year short of the first
+# genuinely deferred season for baskets like that -- SB+LSU's 28/29-
+# equivalent never appeared. A year with no listed contracts yet simply
+# returns None below and costs nothing beyond the loop iteration.
+for cy in range(2009, date.today().year + 3):
     r = build_crop_year(basket_key, cy, MTIMES, True, in_tonnes)
     if r is None:
         continue
@@ -309,8 +352,14 @@ dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25
 with st.sidebar:
     st.markdown("### Years")
     default_cmp = [l for l in complete[-DEFAULT_PLOT:] if l != current]
+    # Every built year except current (current is always drawn on its own,
+    # so it would just be a redundant, confusing entry here) -- deliberately
+    # not narrowed to `complete`: an incomplete-but-listed deferred season
+    # (its contracts already exist, just not expired yet) is real, plottable
+    # data and shouldn't be unreachable just because it hasn't finished.
+    plot_opts = [l for l in labels_all if l != current]
     cmp_years = st.multiselect(
-        "Plot", complete, default=default_cmp, key=f"seas_cmp_{bsig}")
+        "Plot", plot_opts, default=default_cmp, key=f"seas_cmp_{bsig}")
     if len(cmp_years) > MAX_COMPARE:
         st.warning(f"Max {MAX_COMPARE} years.")
         cmp_years = cmp_years[:MAX_COMPARE]
