@@ -1765,6 +1765,84 @@ def _month_matrix_html(mat, year_net, years, last_date, fmt, fmt_std=None) -> st
     return out
 
 
+def _rv_color(v, vmin, vmax) -> str:
+    """Green (low) -> white (mid) -> red (high) over [vmin, vmax] -- the same
+    gradient the Rollex dashboard's own realized-vol heatmap uses (its VOL_CS),
+    so the two read the same way. A LEVEL, not a signed change, so this is a
+    linear scale end to end rather than a diverging one centered on zero."""
+    t = 0.5 if vmax <= vmin else min(max((v - vmin) / (vmax - vmin), 0.0), 1.0)
+    if t <= 0.5:
+        k = t / 0.5
+        r, g, b = 26 + k * (248 - 26), 122 + k * (248 - 122), 26 + k * (248 - 26)
+    else:
+        k = (t - 0.5) / 0.5
+        r, g, b = 248 + k * (192 - 248), 248 + k * (57 - 248), 248 + k * (43 - 248)
+    return f"background-color:rgb({round(r)},{round(g)},{round(b)});color:#1a1a1a"
+
+
+def _vol_matrix_html(mat, year_col, years, last_date, fmt) -> str:
+    """Years down, months across, a green(low)/white/red(high) heatmap tint in
+    every cell -- unlike the OI/Price matrices this is a LEVEL (realized vol),
+    not a signed change, so cells tint rather than bar and carry no +/- sign.
+    `year_col` is the year's own AVERAGE across its months, not a sum (summing
+    a volatility level has no meaning). Shares the other matrices' layout
+    (fixed columns, sticky year column, latest-year shading) and Statistics
+    block (Mean, Std Dev, ICV); here plain grey throughout since a vol level
+    has no up/down to colour by sign the way a price or OI move does."""
+    mat, year_col = mat.loc[years], year_col.loc[years]
+    vals = np.concatenate([mat.to_numpy().ravel(), year_col.to_numpy()])
+    vals = vals[~np.isnan(vals.astype(float))]
+    vmin, vmax = (float(np.min(vals)), float(np.max(vals))) if len(vals) else (0.0, 1.0)
+    partial = (last_date + pd.offsets.MonthEnd(0) - last_date).days > 3
+
+    def cell(v, extra=""):
+        if pd.isna(v):
+            return f"<td class='{extra}'></td>"
+        return f"<td class='{extra}' style='{_rv_color(v, vmin, vmax)}'>{fmt(v)}</td>"
+
+    cols = ("<colgroup><col style='width:64px'>" + "<col>" * 12 + "<col style='width:84px'></colgroup>")
+    head = ("<tr><th class='yr'>Year</th>" + "".join(f"<th>{m}</th>" for m in _MONTHS)
+            + "<th class='net'>Year</th></tr>")
+    rows = []
+    for y in years:
+        cells = "".join(
+            cell(mat.at[y, m], "mtd" if (partial and y == last_date.year and m == last_date.month) else "")
+            for m in range(1, 13))
+        cur = " class='cur'" if y == years[-1] else ""
+        rows.append(f"<tr{cur}><td class='yr'>{y}</td>{cells}{cell(year_col[y], 'net')}</tr>")
+    out = (_MATRIX_CSS + f"<div class='mx-wrap'><table class='mx-tbl'>{cols}<thead>{head}</thead>"
+           f"<tbody>{''.join(rows)}</tbody></table></div>")
+
+    base = years[:-1]
+    if len(base) >= 2:
+        m_mean = mat.loc[base].mean(axis=0, skipna=True)
+        m_std = mat.loc[base].std(axis=0, ddof=1, skipna=True)
+        y_mean, y_std = year_col.loc[base].mean(), year_col.loc[base].std(ddof=1)
+        ratio = lambda a, s: a / s if pd.notna(a) and pd.notna(s) and s > 0 else np.nan
+        m_rat = pd.Series({m: ratio(m_mean[m], m_std[m]) for m in range(1, 13)})
+        y_rat = ratio(y_mean, y_std)
+
+        def sc(v, kind, extra=""):
+            if pd.isna(v):
+                return f"<td class='{extra}'></td>"
+            return f"<td class='flat {extra}'>{fmt(v) if kind != 'ratio' else f'{v:+.2f}'}</td>"
+
+        def srow(label, series, yval, kind):
+            return (f"<tr><td class='yr'>{label}</td>"
+                    + "".join(sc(series[m], kind) for m in range(1, 13)) + sc(yval, kind, "net") + "</tr>")
+
+        shead = ("<tr><th class='yr'></th>" + "".join(f"<th>{m}</th>" for m in _MONTHS)
+                 + "<th class='net'>Year</th></tr>")
+        out += (f"<div class='mx-stat-cap'>Statistics · {base[0]} to {base[-1]}</div>"
+                f"<div class='mx-wrap' style='border-color:#f1f2f4;box-shadow:none'>"
+                f"<table class='mx-tbl mx-stat'>{cols}<thead>{shead}</thead><tbody>"
+                + srow("Mean", m_mean, y_mean, "mean")
+                + srow("Std Dev", m_std, y_std, "std")
+                + srow("ICV", m_rat, y_rat, "ratio")
+                + "</tbody></table></div>")
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TOTAL MARKET OI — LSEG whole-market open interest, seasonality + history
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1925,6 +2003,32 @@ def _view_total_oi():
                                            lambda v: f"{v * 100:+.1f}%",
                                            lambda v: f"{v * 100:.1f}%"),
                         unsafe_allow_html=True)
+
+            # ── Monthly Realized Volatility matrix ──────────────────────────────
+            vol_win = st.radio("RV window", ["20d", "60d"], horizontal=True,
+                               key="totoi_vol_win", label_visibility="collapsed")
+            win = {"20d": 20, "60d": 60}[vol_win]
+            st.markdown(f"#### Monthly Realized Volatility ({vol_win}) : {COMMODITIES[commodity][1]} "
+                        f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {rx.index[-1]:%d %b %Y}</span>",
+                        unsafe_allow_html=True)
+            # Same formula and monthly convention as the Rollex dashboard's own
+            # heatmap: an annualized rolling std of the daily roll-adjusted
+            # return, sampled at each month's LAST trading day (not averaged
+            # over the month) -- rolling(win).std() defaults min_periods to the
+            # window size, same as Rollex, so the first `win` sessions of the
+            # whole series are blank rather than computed on a short sample.
+            rv = rx.rolling(win).std() * np.sqrt(252) * 100
+            rv_m = rv.resample("ME").last()
+            rvmat = (pd.DataFrame({"y": rv_m.index.year, "m": rv_m.index.month, "v": rv_m.to_numpy()})
+                       .pivot_table(index="y", columns="m", values="v").reindex(columns=range(1, 13)))
+            rv_year = rvmat.mean(axis=1, skipna=True)     # a level, so the year figure averages, it doesn't sum
+            _rvyrs = sorted(rvmat.index)
+            _rvyrs = _rvyrs[-10:] if _scope.startswith("Last") else _rvyrs
+            if rvmat.loc[_rvyrs].notna().any().any():
+                st.markdown(_vol_matrix_html(rvmat, rv_year, _rvyrs, rx.index[-1], lambda v: f"{v:.1f}%"),
+                            unsafe_allow_html=True)
+            else:
+                st.info(f"Not enough history for {vol_win} realized volatility yet.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
