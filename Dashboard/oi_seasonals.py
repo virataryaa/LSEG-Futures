@@ -264,21 +264,34 @@ with st.sidebar:
     in_tonnes = unit == "Tonnes"
     unit_txt = "tonnes" if in_tonnes else "lots"
     if preset_name == "Custom":
-        # One picker, not a market multiselect feeding a per-market month
-        # multiselect each -- every (market, month) combination is a single
-        # option, so building a basket is one control instead of several that
-        # have to be read together. The season's opening month is still worked
-        # out automatically (_cycle_start, same rule the presets use); there is
-        # no override widget for it, only the caption below the picker, since
-        # the one case it would matter (a perfectly symmetric span like H+U)
-        # is rare enough that a whole extra control for it wasn't worth the
-        # sidebar space or the "what does this do" it invited.
-        _leg_opts = [f"{mk} {m}" for mk in COMMODITIES for m in _months_traded(mk, MTIMES[mk])]
-        _leg_fmt  = {f"{mk} {m}": f"{mk} {m} ({MONTH_NAMES[m][:3]})" for mk in COMMODITIES
+        # Two steps, not one flat list of every (market, month) combination
+        # across all 7 markets (~35 options to scroll through) and not the old
+        # per-market cascade of separate month multiselects either (as many as
+        # 8 widgets to read together). Markets first narrows "Legs" down to
+        # just the months THOSE markets trade, so the picker stays short and
+        # relevant. The season's opening month is still worked out
+        # automatically (_cycle_start, same rule the presets use) -- there is
+        # no "which leg is first" control, only the caption below, since a
+        # whole extra widget for the one case it would matter (a perfectly
+        # symmetric span like H+U) isn't worth the "what does this do" it invited.
+        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"], key="seas_cmt_markets")
+        _leg_opts = [f"{mk} {m}" for mk in markets for m in _months_traded(mk, MTIMES[mk])]
+        _leg_fmt  = {f"{mk} {m}": f"{mk} {m} ({MONTH_NAMES[m][:3]})" for mk in markets
                      for m in _months_traded(mk, MTIMES[mk])}
-        legs = st.multiselect(
-            "Legs", _leg_opts, default=["KC Z", "KC H"], key="seas_legs",
-            format_func=lambda k: _leg_fmt.get(k, k))
+        # Narrowing Markets can drop a market out from under a leg already
+        # picked for it. Seed/trim session_state directly and never pass
+        # `default=` here: Streamlit validates `default` against `options` on
+        # EVERY render, keyed widget or not, so a `default` that was valid
+        # when Markets was wider raises StreamlitAPIException the moment
+        # Markets narrows past it -- not just on first render, which is the
+        # only time a keyed widget's `default` actually matters anyway.
+        _default_legs = ["KC Z", "KC H"]
+        if "seas_legs" not in st.session_state:
+            st.session_state["seas_legs"] = [l for l in _default_legs if l in _leg_opts]
+        else:
+            st.session_state["seas_legs"] = [l for l in st.session_state["seas_legs"] if l in _leg_opts]
+        legs = st.multiselect("Legs", _leg_opts, key="seas_legs",
+                              format_func=lambda k: _leg_fmt.get(k, k))
         basket = {}
         for leg in legs:
             mk, m = leg.split(" ", 1)
