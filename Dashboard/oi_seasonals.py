@@ -83,21 +83,28 @@ def _cycle_start(months) -> int:
     return min(nums, key=lambda s: max((n - s) % 12 for n in nums))
 
 
-def basket_legs(basket: dict, crop_year: int):
+def basket_legs(basket: dict, crop_year: int, open_month: str | None = None):
     """(commodity, month, delivery_year) for one crop year of the basket.
 
     A leg whose month falls before the opening month has wrapped past December
     into the next calendar year — that is what makes Z25+H26 a single crop
-    year, and what lets KC Z+H and RC X+F sit in one basket together."""
+    year, and what lets KC Z+H and RC X+F sit in one basket together.
+
+    `open_month` overrides the auto-detected opener (_cycle_start) when given
+    and actually part of the basket -- the Custom picker's "Starts with"
+    control, for a set of months where more than one opening reads as
+    reasonable (Mar + Dec could mean "Mar then Dec this year" or "Dec this
+    year, Mar next" — the auto rule picks one, this lets it be corrected)."""
     all_months = [m for ms in basket.values() for m in ms]
-    start = _cycle_start(all_months)
+    start = (MONTH_ORDER[open_month] if open_month in all_months
+             else _cycle_start(all_months))
     return [(c, m, crop_year + (0 if MONTH_ORDER[m] >= start else 1))
             for c, ms in basket.items() for m in ms], start
 
 
 @st.cache_data(max_entries=400, show_spinner=False)
 def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = True,
-                    in_tonnes: bool = False):
+                    in_tonnes: bool = False, open_month: str | None = None):
     """One crop year of basket OI, densified onto an integer days-to-expiry grid.
 
     The x-axis is days to the *back* leg's expiry — for Z+H that is "time to H
@@ -106,7 +113,7 @@ def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = Tr
     that was selected. Returns (series, meta) or None; meta["missing"] names
     any leg with no data at all (the year is then a smaller basket)."""
     basket = {c: list(ms) for c, ms in basket_key}
-    legs, _ = basket_legs(basket, crop_year)
+    legs, _ = basket_legs(basket, crop_year, open_month)
 
     frames, missing = [], []
     for comm, m, y in legs:
@@ -180,9 +187,9 @@ def build_crop_year(basket_key, crop_year: int, mtimes, stop_at_front: bool = Tr
                        last_date=total.index.max())
 
 
-def crop_label(basket: dict, crop_year: int) -> str:
+def crop_label(basket: dict, crop_year: int, open_month: str | None = None) -> str:
     """"24/25" when the basket wraps a calendar year, plain "25" when it does not."""
-    legs, _ = basket_legs(basket, crop_year)
+    legs, _ = basket_legs(basket, crop_year, open_month)
     wraps = any(y != crop_year for _, _, y in legs)
     return (f"{crop_year % 100:02d}/{(crop_year + 1) % 100:02d}" if wraps
             else f"{crop_year % 100:02d}")
@@ -310,12 +317,27 @@ if custom_on:
                                         format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
                 if picked:
                     basket[mk] = sorted(picked, key=MONTH_ORDER.get)
+
+        open_month = None
+        if basket:
+            _all_m = sorted({m for ms in basket.values() for m in ms}, key=MONTH_ORDER.get)
+            if len(_all_m) > 1:
+                # Mar + Dec could mean "Mar then Dec, both this year" or "Dec
+                # this year, Mar next" -- both are valid readings, so the auto
+                # rule's guess (shortest span) is offered as the default and
+                # can be corrected here rather than left to silently decide.
+                _auto_num = _cycle_start(_all_m)
+                _auto = next(m for m in _all_m if MONTH_ORDER[m] == _auto_num)
+                open_month = st.selectbox(
+                    "Starts with", _all_m, index=_all_m.index(_auto),
+                    key=f"seas_open_{'_'.join(_all_m)}",
+                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
         if basket:
             # A Dec + Mar + May pick spans two calendar years (Dec this year,
             # Mar/May next), and there's no way to see that from the month
             # codes alone. Show the actual year of each pick, grouped by
             # market -- concrete dates, not jargon like "leg" or "crop year".
-            _preview, _ = basket_legs(basket, date.today().year)
+            _preview, _ = basket_legs(basket, date.today().year, open_month)
             _by_mk = {}
             for _c, _m, _y in _preview:
                 # Sort key is (year, month), true chronological order -- month
@@ -325,6 +347,8 @@ if custom_on:
             st.caption(" · ".join(f"{c}: " + ", ".join(t for _, t in sorted(v))
                                   for c, v in sorted(_by_mk.items())))
 else:
+    open_month = None      # presets are curated; their auto-detected opener is
+                            # already correct, so no override is offered here.
     with _bc1:
         preset_name = st.selectbox("Preset", list(PRESETS), index=0,
                                    key="seas_preset", label_visibility="collapsed")
@@ -351,10 +375,10 @@ built_all, meta_all = {}, {}
 # equivalent never appeared. A year with no listed contracts yet simply
 # returns None below and costs nothing beyond the loop iteration.
 for cy in range(2009, date.today().year + 3):
-    r = build_crop_year(basket_key, cy, MTIMES, True, in_tonnes)
+    r = build_crop_year(basket_key, cy, MTIMES, True, in_tonnes, open_month)
     if r is None:
         continue
-    lbl = crop_label(basket, cy)
+    lbl = crop_label(basket, cy, open_month)
     built_all[lbl], meta_all[lbl] = r[0], r[1]
 
 if not built_all:
