@@ -471,13 +471,26 @@ if view == "Chart":
     # own end-of-series label can skip itself if that point falls off-screen.
     x_lo = max(0, min(int(built[l].index.min()) for l in set(cmp_years) | {current} | set(avg_years)) - 5)
 
-    for i, lbl in enumerate(cmp_years):
+    # The two most recent comparison years (current excluded -- it already
+    # gets its own boldest, brightest line below) are drawn bold and opaque;
+    # the rest fade back, both in the line itself and its end label. Without
+    # this a year like a just-opened 27/28 -- real data, but only a few
+    # hundred lots deep into a chart whose band is thick with older years --
+    # was there in the legend but effectively invisible against the shading.
+    _bold = set(sorted(l for l in cmp_years if l != current)[-2:])
+    # Faded (older) lines drawn first, bold ones last, so a bold line is never
+    # drawn UNDER an older one crossing it -- draw order is z-order in Plotly.
+    _order = sorted(range(len(cmp_years)), key=lambda k: cmp_years[k] in _bold)
+    for i in _order:
+        lbl = cmp_years[i]
         if lbl == current:
             continue
         color = YEAR_COLORS[i % len(YEAR_COLORS)]
+        bold = lbl in _bold
         fig.add_trace(go.Scatter(
             x=aligned.index, y=aligned[lbl], mode="lines", name=lbl,
-            line=dict(color=color, width=2),
+            line=dict(color=color, width=2.8 if bold else 1.3),
+            opacity=1.0 if bold else 0.4,
             hovertemplate="%{y:,.0f}<extra>" + lbl + "</extra>"))
         # A small label at the line's own end -- same treatment `current` gets
         # below, just quieter (smaller, that year's own line colour) so a
@@ -487,9 +500,10 @@ if view == "Chart":
         if not s_end.empty:
             end_dte = int(s_end.index.min())
             if end_dte >= x_lo:
-                fig.add_annotation(x=end_dte, y=s_end.loc[end_dte], text=f" {lbl}",
-                                   showarrow=False, xanchor="left",
-                                   font=dict(color=color, size=9, family="Inter, sans-serif"))
+                fig.add_annotation(x=end_dte, y=s_end.loc[end_dte],
+                                   text=f" <b>{lbl}</b>" if bold else f" {lbl}",
+                                   showarrow=False, xanchor="left", opacity=1.0 if bold else 0.55,
+                                   font=dict(color=color, size=10 if bold else 8, family="Inter, sans-serif"))
 
     fig.add_trace(go.Scatter(
         x=aligned.index, y=aligned[current], mode="lines", name=current,
