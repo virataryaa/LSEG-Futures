@@ -90,11 +90,17 @@ def basket_legs(basket: dict, crop_year: int, open_month: str | None = None):
     into the next calendar year — that is what makes Z25+H26 a single crop
     year, and what lets KC Z+H and RC X+F sit in one basket together.
 
-    `open_month` overrides the auto-detected opener (_cycle_start) when given
-    and actually part of the basket -- the Custom picker's "Starts with"
-    control, for a set of months where more than one opening reads as
-    reasonable (Mar + Dec could mean "Mar then Dec this year" or "Dec this
-    year, Mar next" — the auto rule picks one, this lets it be corrected)."""
+    Each market's list is either plain month codes (str) -- the season opener
+    is auto-detected via _cycle_start, optionally corrected with `open_month`
+    -- or (month, year_offset) tuples, where each leg already states its own
+    year relative to `crop_year` (0 = same year, 1 = the next one) and no
+    opener guess is involved at all. The Custom picker uses the tuple form:
+    its month options are shown as year-tagged contract codes (Z26, H27, ...)
+    so the user picks the exact leg instead of a month that then needs an
+    opener resolved for it."""
+    items = [(c, x) for c, ms in basket.items() for x in ms]
+    if items and isinstance(items[0][1], tuple):
+        return [(c, m, crop_year + off) for c, (m, off) in items], None
     all_months = [m for ms in basket.values() for m in ms]
     start = (MONTH_ORDER[open_month] if open_month in all_months
              else _cycle_start(all_months))
@@ -297,53 +303,45 @@ with st.container(key="nav_basket"):
                                        key="seas_basket_mode", label_visibility="collapsed") or "Presets"
 custom_on = basket_mode == "Custom"
 
+# Anchor years for the Custom picker's contract codes -- Z26/H27 read the
+# same way a trader already reads a ticker, so picking the exact leg needs
+# no separate "which one opens the season" question at all.
+_ANCHOR_Y0 = date.today().year
+_ANCHOR_Y1 = _ANCHOR_Y0 + 1
+
 if custom_on:
     # One thing per row: Markets, then each selected market's own Months
     # picker gets its own full-width row (not squeezed side by side with the
-    # other market's), then Starts-with + Unit finish it off together, set
-    # apart from the month pickers above so it reads as "one more setting
-    # for the whole basket", not a third thing crammed into the same line.
-    markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
-                             max_selections=2, key="seas_cmt_markets")
+    # other market's). Narrowed to a third of the page -- the plain list of
+    # options never needs the full width a slicer defaults to.
+    _mk_col, _ = st.columns([1, 2])
+    with _mk_col:
+        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
+                                 max_selections=2, key="seas_cmt_markets")
     basket = {}
     for i, mk in enumerate(markets):
         opts = _months_traded(mk, MTIMES[mk])
-        default = [m for m in ("Z", "H") if m in opts] if i == 0 else []
-        picked = st.multiselect(f"{mk} months", opts, default=default, key=f"seas_months_{mk}",
-                                format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
+        # Every traded month, offered twice -- once as this year's contract,
+        # once as next year's (Z26 vs Z27) -- so the year is part of what's
+        # picked, not a guess resolved afterwards from the month alone.
+        code_opts = [(m, off) for m in opts for off in (0, 1)]
+        default = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
+        _m_col, _ = st.columns([1, 2])
+        with _m_col:
+            picked = st.multiselect(
+                f"{mk} contracts", code_opts, default=default, key=f"seas_months_{mk}",
+                format_func=lambda mo: f"{mo[0]}{str((_ANCHOR_Y0 if mo[1] == 0 else _ANCHOR_Y1))[-1]} "
+                                       f"({MONTH_NAMES[mo[0]][:3]} '{(_ANCHOR_Y0 + mo[1]) % 100:02d})")
         if picked:
-            basket[mk] = sorted(picked, key=MONTH_ORDER.get)
+            basket[mk] = sorted(picked, key=lambda mo: (mo[1], MONTH_ORDER[mo[0]]))
 
     open_month = None
-    _all_m = sorted({m for ms in basket.values() for m in ms}, key=MONTH_ORDER.get) if basket else []
-    c_open, c_unit = st.columns([2, 1])
-    if len(_all_m) > 1:
-        # Mar + Dec could mean "Mar then Dec, both this year" or "Dec this
-        # year, Mar next" -- both are valid readings, so the auto rule's
-        # guess (shortest span) is offered as the default and can be
-        # corrected here rather than left to silently decide. Each option is
-        # tagged with its own market -- with two markets in play, "Z (Dec)"
-        # alone doesn't say whether that's the first or second one's Dec.
-        _owner = {}
-        for mk, ms in basket.items():
-            for m in ms:
-                _owner.setdefault(m, []).append(mk)
-        _auto_num = _cycle_start(_all_m)
-        _auto = next(m for m in _all_m if MONTH_ORDER[m] == _auto_num)
-        with c_open:
-            open_month = st.selectbox(
-                "Starts with", _all_m, index=_all_m.index(_auto),
-                key=f"seas_open_{'_'.join(_all_m)}",
-                format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]}, {'/'.join(_owner.get(m, []))})")
-
-    with c_unit:
-        unit = st.radio("Unit", ["Lots", "Tonnes"], key="seas_unit")
+    unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
 
     if basket:
         # A Dec + Mar + May pick spans two calendar years (Dec this year,
-        # Mar/May next), and there's no way to see that from the month
-        # codes alone. Show the actual year of each pick, grouped by
-        # market -- concrete dates, not jargon like "leg" or "crop year".
+        # Mar/May next) -- show the actual year of each pick, grouped by
+        # market, as confirmation of what was just chosen.
         _preview, _ = basket_legs(basket, date.today().year, open_month)
         _by_mk = {}
         for _c, _m, _y in _preview:
@@ -422,7 +420,9 @@ current    = (min(incomplete, key=lambda l: meta[l]["front_ltd"]) if incomplete
 # drops entries missing from the new options — so switching from cocoa (labels
 # like "21/22") to sugar ("27") silently emptied both lists instead of falling
 # back to the defaults. A per-basket key gives each basket its own widget.
-bsig = "_".join(f"{c}{''.join(ms)}" for c, ms in basket_key)
+bsig = "_".join(
+    f"{c}{''.join(m if isinstance(m, str) else f'{m[0]}{m[1]}' for m in ms)}"
+    for c, ms in basket_key)
 
 dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25.0)) * 25, 225)
 
@@ -491,7 +491,8 @@ prev_ref = float(built[prev_lbl].get(cur_dte, np.nan)) if prev_lbl else np.nan
 pctile   = (float((at_dte < cur_oi).mean() * 100)
             if n_avg and len(at_dte) >= max(3, _min_obs(n_avg)) else np.nan)
 
-basket_txt = ", ".join(f"{k} {'+'.join(v)}" for k, v in basket.items())
+basket_txt = ", ".join(f"{k} {'+'.join(x if isinstance(x, str) else x[0] for x in v)}"
+                       for k, v in basket.items())
 st.markdown(f"### {basket_txt} <span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {meta[current]['last_date']:%d %b %Y}</span>", unsafe_allow_html=True)
 
 
