@@ -319,40 +319,55 @@ if custom_on:
     if "seas_cmt_markets" not in st.session_state:
         st.session_state["seas_cmt_markets"] = _snap["markets"]
 
-    # One thing per row: Markets, then each selected market's own Months
-    # picker gets its own full-width row (not squeezed side by side with the
-    # other market's). Narrowed to a third of the page -- the plain list of
-    # options never needs the full width a slicer defaults to.
-    _mk_col, _ = st.columns([1, 2])
-    with _mk_col:
-        markets = st.multiselect("Markets", list(COMMODITIES),
-                                 max_selections=2, key="seas_cmt_markets")
-    _snap["markets"] = markets
+    # Open by default (so a first-time visitor sees the picker right away),
+    # then collapses itself the next run after a market or contract pick
+    # actually changes -- once the basket is set, the picker just takes up
+    # space; the confirmation caption below stays visible either way.
+    _prev_markets = list(_snap.get("markets", []))
+    _prev_months = {k: list(v) for k, v in _snap.get("months", {}).items()}
+    _expanded = st.session_state.get("_custom_slicers_open", True)
 
-    basket = {}
-    for i, mk in enumerate(markets):
-        opts = _months_traded(mk, MTIMES[mk])
-        # Every traded month, offered twice -- once as this year's contract,
-        # once as next year's (Z26 vs Z27) -- so the year is part of what's
-        # picked, not a guess resolved afterwards from the month alone.
-        code_opts = [(m, off) for m in opts for off in (0, 1)]
-        months_key = f"seas_months_{mk}"
-        if months_key not in st.session_state:
-            _remembered = [mo for mo in _snap["months"].get(mk, []) if mo in code_opts]
-            _fallback = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
-            st.session_state[months_key] = _remembered or _fallback
-        _m_col, _ = st.columns([1, 2])
-        with _m_col:
-            picked = st.multiselect(
-                f"{mk} contracts", code_opts, key=months_key,
-                format_func=lambda mo: f"{mo[0]}{str((_ANCHOR_Y0 if mo[1] == 0 else _ANCHOR_Y1))[-1]} "
-                                       f"({MONTH_NAMES[mo[0]][:3]} '{(_ANCHOR_Y0 + mo[1]) % 100:02d})")
-        _snap["months"][mk] = picked
-        if picked:
-            basket[mk] = sorted(picked, key=lambda mo: (mo[1], MONTH_ORDER[mo[0]]))
+    with st.expander("Custom basket settings", expanded=_expanded):
+        # One thing per row: Markets, then each selected market's own Months
+        # picker gets its own full-width row (not squeezed side by side with
+        # the other market's). Narrowed to a third of the page -- the plain
+        # list of options never needs the full width a slicer defaults to.
+        _mk_col, _ = st.columns([1, 2])
+        with _mk_col:
+            markets = st.multiselect("Markets", list(COMMODITIES),
+                                     max_selections=2, key="seas_cmt_markets")
+        _snap["markets"] = markets
 
-    open_month = None
-    unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
+        basket = {}
+        for i, mk in enumerate(markets):
+            opts = _months_traded(mk, MTIMES[mk])
+            # Every traded month, offered twice -- once as this year's
+            # contract, once as next year's (Z26 vs Z27) -- so the year is
+            # part of what's picked, not a guess resolved after the fact.
+            code_opts = [(m, off) for m in opts for off in (0, 1)]
+            months_key = f"seas_months_{mk}"
+            if months_key not in st.session_state:
+                _remembered = [mo for mo in _snap["months"].get(mk, []) if mo in code_opts]
+                _fallback = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
+                st.session_state[months_key] = _remembered or _fallback
+            _m_col, _ = st.columns([1, 2])
+            with _m_col:
+                picked = st.multiselect(
+                    f"{mk} contracts", code_opts, key=months_key,
+                    format_func=lambda mo: f"{mo[0]}{str((_ANCHOR_Y0 if mo[1] == 0 else _ANCHOR_Y1))[-1]} "
+                                           f"({MONTH_NAMES[mo[0]][:3]} '{(_ANCHOR_Y0 + mo[1]) % 100:02d})")
+            _snap["months"][mk] = picked
+            if picked:
+                basket[mk] = sorted(picked, key=lambda mo: (mo[1], MONTH_ORDER[mo[0]]))
+
+        open_month = None
+        unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
+
+    if markets != _prev_markets or any(
+        _snap["months"].get(mk, []) != _prev_months.get(mk, [])
+        for mk in set(_snap["months"]) | set(_prev_months)
+    ):
+        st.session_state["_custom_slicers_open"] = False
 
     if basket:
         # A Dec + Mar + May pick spans two calendar years (Dec this year,
