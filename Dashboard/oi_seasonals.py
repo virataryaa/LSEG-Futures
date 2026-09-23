@@ -259,31 +259,20 @@ with st.sidebar:
     custom_on = st.checkbox("Build my own", key="seas_custom_on")
 
     if custom_on:
-        # Two widgets, not one flat list of ~35 market+month combinations, and
-        # not the old per-market cascade either (up to 8 widgets). Markets
-        # first narrows Months down to just what those markets trade.
-        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"], key="seas_cmt_markets")
-        _leg_opts = [f"{mk} {m}" for mk in markets for m in _months_traded(mk, MTIMES[mk])]
-        _leg_fmt  = {f"{mk} {m}": f"{mk} {m} ({MONTH_NAMES[m][:3]})" for mk in markets
-                     for m in _months_traded(mk, MTIMES[mk])}
-        # Narrowing Markets can drop a market out from under a month already
-        # picked for it. Seed/trim session_state directly and never pass
-        # `default=`: Streamlit validates `default` against `options` on
-        # EVERY render, keyed widget or not, so a `default` valid when
-        # Markets was wider raises the moment Markets narrows past it.
-        _default_legs = ["KC Z", "KC H"]
-        if "seas_legs" not in st.session_state:
-            st.session_state["seas_legs"] = [l for l in _default_legs if l in _leg_opts]
-        else:
-            st.session_state["seas_legs"] = [l for l in st.session_state["seas_legs"] if l in _leg_opts]
-        legs = st.multiselect("Months", _leg_opts, key="seas_legs",
-                              format_func=lambda k: _leg_fmt.get(k, k))
+        # Markets capped at 2, so this is at most two widgets -- one Months
+        # picker per market, each scoped to just that market's own months
+        # (never affected by the OTHER market's pick, so no stale-value
+        # handling is needed the way a single shared list would require).
+        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
+                                 max_selections=2, key="seas_cmt_markets")
         basket = {}
-        for leg in legs:
-            mk, m = leg.split(" ", 1)
-            basket.setdefault(mk, []).append(m)
-        for mk in basket:
-            basket[mk] = sorted(set(basket[mk]), key=MONTH_ORDER.get)
+        for i, mk in enumerate(markets):
+            opts = _months_traded(mk, MTIMES[mk])
+            default = [m for m in ("Z", "H") if m in opts] if i == 0 else []
+            picked = st.multiselect(f"{mk} months", opts, default=default, key=f"seas_months_{mk}",
+                                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
+            if picked:
+                basket[mk] = sorted(picked, key=MONTH_ORDER.get)
         if basket:
             # A Dec + Mar + May pick spans two calendar years (Dec this year,
             # Mar/May next), and there's no way to see that from the month
