@@ -254,9 +254,39 @@ def _months_traded(commodity: str, mtime: float) -> list:
 if st.session_state.get("seas_preset") not in (None, *PRESETS):
     del st.session_state["seas_preset"]
 
+# Pill-styled tab switch (same look as the OI Progression page's own section
+# nav) between the 9 ready-made baskets and building one from scratch --
+# a checkbox read the same either way but didn't look or feel like a real
+# choice between two modes the way two tabs do.
+_BASKET_ACCENT = "#2a78d6"
+st.markdown(f"""<style>
+  .st-key-nav_basket [data-testid="stButtonGroup"] > div {{
+    display:inline-flex; gap:4px; padding:4px; background:#f1f3f7;
+    border:1px solid #e3e7ee; border-radius:999px;
+  }}
+  .st-key-nav_basket button[kind^="segmented_control"] {{
+    border:none !important; border-radius:999px !important; margin:0 !important;
+    padding:.35rem 1.1rem !important; min-height:0 !important;
+    background:transparent !important; box-shadow:none !important;
+    transition:background .15s ease, color .15s ease;
+  }}
+  .st-key-nav_basket button[kind^="segmented_control"] p {{
+    font-size:.82rem !important; font-weight:600 !important; letter-spacing:.02em;
+    color:#5b6472 !important;
+  }}
+  .st-key-nav_basket button[kind="segmented_control"]:hover {{ background:#e6e9f0 !important; }}
+  .st-key-nav_basket button[kind="segmented_controlActive"] {{
+    background:{_BASKET_ACCENT} !important; box-shadow:0 1px 3px rgba(0,0,0,.18) !important;
+  }}
+  .st-key-nav_basket button[kind="segmented_controlActive"] p {{ color:#ffffff !important; }}
+</style>""", unsafe_allow_html=True)
+
 with st.sidebar:
     st.markdown("### Basket")
-    custom_on = st.checkbox("Build my own", key="seas_custom_on")
+    with st.container(key="nav_basket"):
+        basket_mode = st.segmented_control("Basket mode", ["Presets", "Custom"], default="Presets",
+                                           key="seas_basket_mode", label_visibility="collapsed") or "Presets"
+    custom_on = basket_mode == "Custom"
 
     if custom_on:
         # Markets capped at 2, so this is at most two widgets -- one Months
