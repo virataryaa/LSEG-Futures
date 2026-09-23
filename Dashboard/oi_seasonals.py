@@ -297,7 +297,6 @@ st.markdown(f"""<style>
 # On the main page now, not the sidebar -- it's the first choice this page
 # asks for, and a pill switch tucked in the sidebar read more like a filter
 # than the mode-defining choice it actually is.
-st.markdown("### Basket")
 with st.container(key="nav_basket"):
     basket_mode = st.segmented_control("Basket mode", ["Presets", "Custom"], default="Presets",
                                        key="seas_basket_mode", label_visibility="collapsed") or "Presets"
