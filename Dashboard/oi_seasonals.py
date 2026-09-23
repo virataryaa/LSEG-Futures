@@ -284,6 +284,20 @@ with st.sidebar:
             basket.setdefault(mk, []).append(m)
         for mk in basket:
             basket[mk] = sorted(set(basket[mk]), key=MONTH_ORDER.get)
+        if basket:
+            # A Dec + Mar + May pick spans two calendar years (Dec this year,
+            # Mar/May next), and there's no way to see that from the month
+            # codes alone. Show the actual year of each pick, grouped by
+            # market -- concrete dates, not jargon like "leg" or "crop year".
+            _preview, _ = basket_legs(basket, date.today().year)
+            _by_mk = {}
+            for _c, _m, _y in _preview:
+                # Sort key is (year, month), true chronological order -- month
+                # alone would put Dec (opens the season) after the following
+                # Mar/May it precedes, since 12 sorts after 3 and 5.
+                _by_mk.setdefault(_c, []).append(((_y, MONTH_ORDER[_m]), f"{MONTH_NAMES[_m][:3]} '{_y % 100:02d}"))
+            st.caption(" · ".join(f"{c}: " + ", ".join(t for _, t in sorted(v))
+                                  for c, v in sorted(_by_mk.items())))
     else:
         preset_name = st.selectbox("Preset", list(PRESETS), index=0,
                                    key="seas_preset", label_visibility="collapsed")
