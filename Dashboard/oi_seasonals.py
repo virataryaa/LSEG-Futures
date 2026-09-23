@@ -46,7 +46,8 @@ CURRENT_COLOR = "#E8470A"
 YEAR_COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#e87ba4",
                "#008300", "#4a3aa7", "#e34948"]
 MAX_COMPARE = len(YEAR_COLORS)
-DEFAULT_PLOT = 4        # comparison years drawn on opening; more can be added, up to MAX_COMPARE
+DEFAULT_PLOT = 4        # comparison lines drawn on opening (most recent, incl. any
+                         # not-yet-started deferred season); more can be added, up to MAX_COMPARE
 
 MEAN_COLOR = "#1a1a2e"          # neutral reference line, not a series hue
 BAND_INNER = "rgba(99,149,237,0.28)"
@@ -241,9 +242,6 @@ def _kpi_row(items):
 
 
 MTIMES = {c: _mtime(c) for c in COMMODITIES}
-_REV_MONTH_ORDER = {v: k for k, v in MONTH_ORDER.items()}
-
-
 @st.cache_data(show_spinner=False)
 def _months_traded(commodity: str, mtime: float) -> list:
     df = load_data(commodity, mtime)
@@ -253,44 +251,32 @@ def _months_traded(commodity: str, mtime: float) -> list:
 # ── Sidebar: basket ───────────────────────────────────────────────────────────
 # A renamed preset leaves the old name in a returning session's state, which a
 # selectbox will not silently recover from.
-if st.session_state.get("seas_preset") not in (None, *PRESETS, "Custom"):
+if st.session_state.get("seas_preset") not in (None, *PRESETS):
     del st.session_state["seas_preset"]
 
 with st.sidebar:
     st.markdown("### Basket")
-    preset_name = st.selectbox("Preset", list(PRESETS) + ["Custom"], index=0,
-                               key="seas_preset", label_visibility="collapsed")
-    unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
-    in_tonnes = unit == "Tonnes"
-    unit_txt = "tonnes" if in_tonnes else "lots"
-    if preset_name == "Custom":
-        # Two steps, not one flat list of every (market, month) combination
-        # across all 7 markets (~35 options to scroll through) and not the old
-        # per-market cascade of separate month multiselects either (as many as
-        # 8 widgets to read together). Markets first narrows "Legs" down to
-        # just the months THOSE markets trade, so the picker stays short and
-        # relevant. The season's opening month is still worked out
-        # automatically (_cycle_start, same rule the presets use) -- there is
-        # no "which leg is first" control, only the caption below, since a
-        # whole extra widget for the one case it would matter (a perfectly
-        # symmetric span like H+U) isn't worth the "what does this do" it invited.
+    custom_on = st.checkbox("Build my own", key="seas_custom_on")
+
+    if custom_on:
+        # Two widgets, not one flat list of ~35 market+month combinations, and
+        # not the old per-market cascade either (up to 8 widgets). Markets
+        # first narrows Months down to just what those markets trade.
         markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"], key="seas_cmt_markets")
         _leg_opts = [f"{mk} {m}" for mk in markets for m in _months_traded(mk, MTIMES[mk])]
         _leg_fmt  = {f"{mk} {m}": f"{mk} {m} ({MONTH_NAMES[m][:3]})" for mk in markets
                      for m in _months_traded(mk, MTIMES[mk])}
-        # Narrowing Markets can drop a market out from under a leg already
+        # Narrowing Markets can drop a market out from under a month already
         # picked for it. Seed/trim session_state directly and never pass
-        # `default=` here: Streamlit validates `default` against `options` on
-        # EVERY render, keyed widget or not, so a `default` that was valid
-        # when Markets was wider raises StreamlitAPIException the moment
-        # Markets narrows past it -- not just on first render, which is the
-        # only time a keyed widget's `default` actually matters anyway.
+        # `default=`: Streamlit validates `default` against `options` on
+        # EVERY render, keyed widget or not, so a `default` valid when
+        # Markets was wider raises the moment Markets narrows past it.
         _default_legs = ["KC Z", "KC H"]
         if "seas_legs" not in st.session_state:
             st.session_state["seas_legs"] = [l for l in _default_legs if l in _leg_opts]
         else:
             st.session_state["seas_legs"] = [l for l in st.session_state["seas_legs"] if l in _leg_opts]
-        legs = st.multiselect("Legs", _leg_opts, key="seas_legs",
+        legs = st.multiselect("Months", _leg_opts, key="seas_legs",
                               format_func=lambda k: _leg_fmt.get(k, k))
         basket = {}
         for leg in legs:
@@ -298,14 +284,17 @@ with st.sidebar:
             basket.setdefault(mk, []).append(m)
         for mk in basket:
             basket[mk] = sorted(set(basket[mk]), key=MONTH_ORDER.get)
-        if basket:
-            _open = _REV_MONTH_ORDER[_cycle_start([m for ms in basket.values() for m in ms])]
-            st.caption(f"Season opens {MONTH_NAMES[_open]}.")
     else:
+        preset_name = st.selectbox("Preset", list(PRESETS), index=0,
+                                   key="seas_preset", label_visibility="collapsed")
         basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
 
+    unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
+    in_tonnes = unit == "Tonnes"
+    unit_txt = "tonnes" if in_tonnes else "lots"
+
 if not basket:
-    st.info("Pick at least one leg in the sidebar.")
+    st.info("Pick at least one month in the sidebar.")
     st.stop()
 
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
@@ -364,7 +353,11 @@ dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25
 
 with st.sidebar:
     st.markdown("### Years")
-    default_cmp = [l for l in complete[-DEFAULT_PLOT:] if l != current]
+    # The most recent built years, current excluded (it's always drawn on its
+    # own) -- not narrowed to `complete`, so a deferred season already listed
+    # but not yet trading (e.g. next year's basket) is included by default
+    # rather than only reachable by adding it by hand.
+    default_cmp = [l for l in labels_all if l != current][-DEFAULT_PLOT:]
     # Every built year except current (current is always drawn on its own,
     # so it would just be a redundant, confusing entry here) -- deliberately
     # not narrowed to `complete`: an incomplete-but-listed deferred season
