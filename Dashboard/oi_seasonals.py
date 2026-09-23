@@ -281,28 +281,35 @@ st.markdown(f"""<style>
   .st-key-nav_basket button[kind="segmented_controlActive"] p {{ color:#ffffff !important; }}
 </style>""", unsafe_allow_html=True)
 
-with st.sidebar:
-    st.markdown("### Basket")
-    with st.container(key="nav_basket"):
-        basket_mode = st.segmented_control("Basket mode", ["Presets", "Custom"], default="Presets",
-                                           key="seas_basket_mode", label_visibility="collapsed") or "Presets"
-    custom_on = basket_mode == "Custom"
+# On the main page now, not the sidebar -- it's the first choice this page
+# asks for, and a pill switch tucked in the sidebar read more like a filter
+# than the mode-defining choice it actually is.
+st.markdown("### Basket")
+with st.container(key="nav_basket"):
+    basket_mode = st.segmented_control("Basket mode", ["Presets", "Custom"], default="Presets",
+                                       key="seas_basket_mode", label_visibility="collapsed") or "Presets"
+custom_on = basket_mode == "Custom"
 
-    if custom_on:
+_bc1, _bc2 = st.columns([3, 1])
+if custom_on:
+    with _bc1:
         # Markets capped at 2, so this is at most two widgets -- one Months
         # picker per market, each scoped to just that market's own months
         # (never affected by the OTHER market's pick, so no stale-value
         # handling is needed the way a single shared list would require).
-        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
-                                 max_selections=2, key="seas_cmt_markets")
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
+                                     max_selections=2, key="seas_cmt_markets")
         basket = {}
-        for i, mk in enumerate(markets):
-            opts = _months_traded(mk, MTIMES[mk])
-            default = [m for m in ("Z", "H") if m in opts] if i == 0 else []
-            picked = st.multiselect(f"{mk} months", opts, default=default, key=f"seas_months_{mk}",
-                                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
-            if picked:
-                basket[mk] = sorted(picked, key=MONTH_ORDER.get)
+        with _mc2:
+            for i, mk in enumerate(markets):
+                opts = _months_traded(mk, MTIMES[mk])
+                default = [m for m in ("Z", "H") if m in opts] if i == 0 else []
+                picked = st.multiselect(f"{mk} months", opts, default=default, key=f"seas_months_{mk}",
+                                        format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
+                if picked:
+                    basket[mk] = sorted(picked, key=MONTH_ORDER.get)
         if basket:
             # A Dec + Mar + May pick spans two calendar years (Dec this year,
             # Mar/May next), and there's no way to see that from the month
@@ -317,18 +324,21 @@ with st.sidebar:
                 _by_mk.setdefault(_c, []).append(((_y, MONTH_ORDER[_m]), f"{MONTH_NAMES[_m][:3]} '{_y % 100:02d}"))
             st.caption(" · ".join(f"{c}: " + ", ".join(t for _, t in sorted(v))
                                   for c, v in sorted(_by_mk.items())))
-    else:
+else:
+    with _bc1:
         preset_name = st.selectbox("Preset", list(PRESETS), index=0,
                                    key="seas_preset", label_visibility="collapsed")
         basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
 
+with _bc2:
     unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
-    in_tonnes = unit == "Tonnes"
-    unit_txt = "tonnes" if in_tonnes else "lots"
+in_tonnes = unit == "Tonnes"
+unit_txt = "tonnes" if in_tonnes else "lots"
 
 if not basket:
-    st.info("Pick at least one month in the sidebar.")
+    st.info("Pick at least one month above.")
     st.stop()
+st.markdown("---")
 
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
 
