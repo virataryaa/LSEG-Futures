@@ -309,14 +309,26 @@ _ANCHOR_Y0 = date.today().year
 _ANCHOR_Y1 = _ANCHOR_Y0 + 1
 
 if custom_on:
+    # Streamlit tears down a widget's session_state entry for any run where
+    # that widget isn't instantiated -- so Markets/contracts reset to their
+    # hardcoded default the moment Presets is picked and Custom re-entered,
+    # even though the widget is still keyed. A snapshot dict is NOT tied to
+    # any widget, so it survives those runs untouched; it is what actually
+    # remembers the picks, and the widgets below are re-seeded from it.
+    _snap = st.session_state.setdefault("_cmt_snapshot", {"markets": ["KC"], "months": {}})
+    if "seas_cmt_markets" not in st.session_state:
+        st.session_state["seas_cmt_markets"] = _snap["markets"]
+
     # One thing per row: Markets, then each selected market's own Months
     # picker gets its own full-width row (not squeezed side by side with the
     # other market's). Narrowed to a third of the page -- the plain list of
     # options never needs the full width a slicer defaults to.
     _mk_col, _ = st.columns([1, 2])
     with _mk_col:
-        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
+        markets = st.multiselect("Markets", list(COMMODITIES),
                                  max_selections=2, key="seas_cmt_markets")
+    _snap["markets"] = markets
+
     basket = {}
     for i, mk in enumerate(markets):
         opts = _months_traded(mk, MTIMES[mk])
@@ -324,13 +336,18 @@ if custom_on:
         # once as next year's (Z26 vs Z27) -- so the year is part of what's
         # picked, not a guess resolved afterwards from the month alone.
         code_opts = [(m, off) for m in opts for off in (0, 1)]
-        default = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
+        months_key = f"seas_months_{mk}"
+        if months_key not in st.session_state:
+            _remembered = [mo for mo in _snap["months"].get(mk, []) if mo in code_opts]
+            _fallback = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
+            st.session_state[months_key] = _remembered or _fallback
         _m_col, _ = st.columns([1, 2])
         with _m_col:
             picked = st.multiselect(
-                f"{mk} contracts", code_opts, default=default, key=f"seas_months_{mk}",
+                f"{mk} contracts", code_opts, key=months_key,
                 format_func=lambda mo: f"{mo[0]}{str((_ANCHOR_Y0 if mo[1] == 0 else _ANCHOR_Y1))[-1]} "
                                        f"({MONTH_NAMES[mo[0]][:3]} '{(_ANCHOR_Y0 + mo[1]) % 100:02d})")
+        _snap["months"][mk] = picked
         if picked:
             basket[mk] = sorted(picked, key=lambda mo: (mo[1], MONTH_ORDER[mo[0]]))
 
