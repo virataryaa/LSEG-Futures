@@ -294,106 +294,97 @@ st.markdown(f"""<style>
   .st-key-nav_basket button[kind="segmented_controlActive"] p {{ color:#ffffff !important; }}
 </style>""", unsafe_allow_html=True)
 
-# Chart first, slicers after -- these two containers reserve their screen
-# position now; the code that fills them still runs in its normal order
-# below (widgets before the basket they build, chart after the basket is
-# built) -- only where each ends up on the page is decoupled from when
-# its code actually runs.
-chart_slot = st.container()
-slicer_slot = st.container()
+# On the main page now, not the sidebar -- it's the first choice this page
+# asks for, and a pill switch tucked in the sidebar read more like a filter
+# than the mode-defining choice it actually is.
+with st.container(key="nav_basket"):
+    basket_mode = st.segmented_control("Basket mode", ["Presets", "Custom"], default="Presets",
+                                       key="seas_basket_mode", label_visibility="collapsed") or "Presets"
+custom_on = basket_mode == "Custom"
 
-with slicer_slot:
-    # On the main page now, not the sidebar -- it's the first choice this page
-    # asks for, and a pill switch tucked in the sidebar read more like a filter
-    # than the mode-defining choice it actually is.
-    with st.container(key="nav_basket"):
-        basket_mode = st.segmented_control("Basket mode", ["Presets", "Custom"], default="Presets",
-                                           key="seas_basket_mode", label_visibility="collapsed") or "Presets"
-    custom_on = basket_mode == "Custom"
+# Anchor years for the Custom picker's contract codes -- Z26/H27 read the
+# same way a trader already reads a ticker, so picking the exact leg needs
+# no separate "which one opens the season" question at all.
+_ANCHOR_Y0 = date.today().year
+_ANCHOR_Y1 = _ANCHOR_Y0 + 1
 
-    # Anchor years for the Custom picker's contract codes -- Z26/H27 read the
-    # same way a trader already reads a ticker, so picking the exact leg needs
-    # no separate "which one opens the season" question at all.
-    _ANCHOR_Y0 = date.today().year
-    _ANCHOR_Y1 = _ANCHOR_Y0 + 1
+if custom_on:
+    # Streamlit tears down a widget's session_state entry for any run where
+    # that widget isn't instantiated -- so Markets/contracts reset to their
+    # hardcoded default the moment Presets is picked and Custom re-entered,
+    # even though the widget is still keyed. A snapshot dict is NOT tied to
+    # any widget, so it survives those runs untouched; it is what actually
+    # remembers the picks, and the widgets below are re-seeded from it.
+    _snap = st.session_state.setdefault("_cmt_snapshot", {"markets": ["KC"], "months": {}})
+    if "seas_cmt_markets" not in st.session_state:
+        st.session_state["seas_cmt_markets"] = _snap["markets"]
 
-    if custom_on:
-        # Streamlit tears down a widget's session_state entry for any run where
-        # that widget isn't instantiated -- so Markets/contracts reset to their
-        # hardcoded default the moment Presets is picked and Custom re-entered,
-        # even though the widget is still keyed. A snapshot dict is NOT tied to
-        # any widget, so it survives those runs untouched; it is what actually
-        # remembers the picks, and the widgets below are re-seeded from it.
-        _snap = st.session_state.setdefault("_cmt_snapshot", {"markets": ["KC"], "months": {}})
-        if "seas_cmt_markets" not in st.session_state:
-            st.session_state["seas_cmt_markets"] = _snap["markets"]
+    # One thing per row: Markets, then each selected market's own Months
+    # picker gets its own full-width row (not squeezed side by side with the
+    # other market's). Narrowed to a third of the page -- the plain list of
+    # options never needs the full width a slicer defaults to.
+    _mk_col, _ = st.columns([1, 2])
+    with _mk_col:
+        markets = st.multiselect("Markets", list(COMMODITIES),
+                                 max_selections=2, key="seas_cmt_markets")
+    _snap["markets"] = markets
 
-        # One thing per row: Markets, then each selected market's own Months
-        # picker gets its own full-width row (not squeezed side by side with the
-        # other market's). Narrowed to a third of the page -- the plain list of
-        # options never needs the full width a slicer defaults to.
-        _mk_col, _ = st.columns([1, 2])
-        with _mk_col:
-            markets = st.multiselect("Markets", list(COMMODITIES),
-                                     max_selections=2, key="seas_cmt_markets")
-        _snap["markets"] = markets
+    basket = {}
+    for i, mk in enumerate(markets):
+        opts = _months_traded(mk, MTIMES[mk])
+        # Every traded month, offered twice -- once as this year's contract,
+        # once as next year's (Z26 vs Z27) -- so the year is part of what's
+        # picked, not a guess resolved afterwards from the month alone.
+        code_opts = [(m, off) for m in opts for off in (0, 1)]
+        months_key = f"seas_months_{mk}"
+        if months_key not in st.session_state:
+            _remembered = [mo for mo in _snap["months"].get(mk, []) if mo in code_opts]
+            _fallback = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
+            st.session_state[months_key] = _remembered or _fallback
+        _m_col, _ = st.columns([1, 2])
+        with _m_col:
+            picked = st.multiselect(
+                f"{mk} contracts", code_opts, key=months_key,
+                format_func=lambda mo: f"{mo[0]}{str((_ANCHOR_Y0 if mo[1] == 0 else _ANCHOR_Y1))[-1]} "
+                                       f"({MONTH_NAMES[mo[0]][:3]} '{(_ANCHOR_Y0 + mo[1]) % 100:02d})")
+        _snap["months"][mk] = picked
+        if picked:
+            basket[mk] = sorted(picked, key=lambda mo: (mo[1], MONTH_ORDER[mo[0]]))
 
-        basket = {}
-        for i, mk in enumerate(markets):
-            opts = _months_traded(mk, MTIMES[mk])
-            # Every traded month, offered twice -- once as this year's contract,
-            # once as next year's (Z26 vs Z27) -- so the year is part of what's
-            # picked, not a guess resolved afterwards from the month alone.
-            code_opts = [(m, off) for m in opts for off in (0, 1)]
-            months_key = f"seas_months_{mk}"
-            if months_key not in st.session_state:
-                _remembered = [mo for mo in _snap["months"].get(mk, []) if mo in code_opts]
-                _fallback = [(m, off) for m, off in (("Z", 0), ("H", 1)) if m in opts] if i == 0 else []
-                st.session_state[months_key] = _remembered or _fallback
-            _m_col, _ = st.columns([1, 2])
-            with _m_col:
-                picked = st.multiselect(
-                    f"{mk} contracts", code_opts, key=months_key,
-                    format_func=lambda mo: f"{mo[0]}{str((_ANCHOR_Y0 if mo[1] == 0 else _ANCHOR_Y1))[-1]} "
-                                           f"({MONTH_NAMES[mo[0]][:3]} '{(_ANCHOR_Y0 + mo[1]) % 100:02d})")
-            _snap["months"][mk] = picked
-            if picked:
-                basket[mk] = sorted(picked, key=lambda mo: (mo[1], MONTH_ORDER[mo[0]]))
+    open_month = None
+    unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
 
-        open_month = None
+    if basket:
+        # A Dec + Mar + May pick spans two calendar years (Dec this year,
+        # Mar/May next) -- show the actual year of each pick, grouped by
+        # market, as confirmation of what was just chosen.
+        _preview, _ = basket_legs(basket, date.today().year, open_month)
+        _by_mk = {}
+        for _c, _m, _y in _preview:
+            # Sort key is (year, month), true chronological order -- month
+            # alone would put Dec (opens the season) after the following
+            # Mar/May it precedes, since 12 sorts after 3 and 5.
+            _by_mk.setdefault(_c, []).append(((_y, MONTH_ORDER[_m]), f"{MONTH_NAMES[_m][:3]} '{_y % 100:02d}"))
+        st.caption(" · ".join(f"{c}: " + ", ".join(t for _, t in sorted(v))
+                              for c, v in sorted(_by_mk.items())))
+else:
+    open_month = None      # presets are curated; their auto-detected opener is
+                            # already correct, so no override is offered here.
+    c_pre, c_unit = st.columns([3, 1])
+    with c_pre:
+        preset_name = st.selectbox("Preset", list(PRESETS), index=0,
+                                   key="seas_preset", label_visibility="collapsed")
+        basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
+    with c_unit:
         unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
 
-        if basket:
-            # A Dec + Mar + May pick spans two calendar years (Dec this year,
-            # Mar/May next) -- show the actual year of each pick, grouped by
-            # market, as confirmation of what was just chosen.
-            _preview, _ = basket_legs(basket, date.today().year, open_month)
-            _by_mk = {}
-            for _c, _m, _y in _preview:
-                # Sort key is (year, month), true chronological order -- month
-                # alone would put Dec (opens the season) after the following
-                # Mar/May it precedes, since 12 sorts after 3 and 5.
-                _by_mk.setdefault(_c, []).append(((_y, MONTH_ORDER[_m]), f"{MONTH_NAMES[_m][:3]} '{_y % 100:02d}"))
-            st.caption(" · ".join(f"{c}: " + ", ".join(t for _, t in sorted(v))
-                                  for c, v in sorted(_by_mk.items())))
-    else:
-        open_month = None      # presets are curated; their auto-detected opener is
-                                # already correct, so no override is offered here.
-        c_pre, c_unit = st.columns([3, 1])
-        with c_pre:
-            preset_name = st.selectbox("Preset", list(PRESETS), index=0,
-                                       key="seas_preset", label_visibility="collapsed")
-            basket = {k: list(v) for k, v in PRESETS[preset_name].items()}
-        with c_unit:
-            unit = st.radio("Unit", ["Lots", "Tonnes"], horizontal=True, key="seas_unit")
+in_tonnes = unit == "Tonnes"
+unit_txt = "tonnes" if in_tonnes else "lots"
 
-    in_tonnes = unit == "Tonnes"
-    unit_txt = "tonnes" if in_tonnes else "lots"
-
-    if not basket:
-        st.info("Pick at least one month above.")
-        st.stop()
-    st.markdown("---")
+if not basket:
+    st.info("Pick at least one month above.")
+    st.stop()
+st.markdown("---")
 
 basket_key = tuple((c, tuple(ms)) for c, ms in sorted(basket.items()))
 
@@ -516,220 +507,218 @@ prev_ref = float(built[prev_lbl].get(cur_dte, np.nan)) if prev_lbl else np.nan
 pctile   = (float((at_dte < cur_oi).mean() * 100)
             if n_avg and len(at_dte) >= max(3, _min_obs(n_avg)) else np.nan)
 
-
-with chart_slot:
-    basket_txt = ", ".join(f"{k} {'+'.join(x if isinstance(x, str) else x[0] for x in v)}"
-                           for k, v in basket.items())
-    st.markdown(f"### {basket_txt} <span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {meta[current]['last_date']:%d %b %Y}</span>", unsafe_allow_html=True)
+basket_txt = ", ".join(f"{k} {'+'.join(x if isinstance(x, str) else x[0] for x in v)}"
+                       for k, v in basket.items())
+st.markdown(f"### {basket_txt} <span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {meta[current]['last_date']:%d %b %Y}</span>", unsafe_allow_html=True)
 
 
-    def _pct(a, b):
-        return f"{(a / b - 1) * 100:+.1f}%" if pd.notna(b) and b > 0 else None
+def _pct(a, b):
+    return f"{(a / b - 1) * 100:+.1f}%" if pd.notna(b) and b > 0 else None
 
 
-    _kpi_row([
-        (f"{current} OI, {unit_txt}", f"{cur_oi:,.0f}"),
-        ("As of", meta[current]["last_date"].strftime("%b %d, %Y")),
-        ("DTE", f"{cur_dte}"),
-        (f"vs {n_avg}Y mean", f"{mean_ref:,.0f}" if pd.notna(mean_ref) else "—", _pct(cur_oi, mean_ref)),
-        (f"vs {prev_lbl}", f"{prev_ref:,.0f}" if pd.notna(prev_ref) else "—", _pct(cur_oi, prev_ref)),
-        ("Percentile", f"P{pctile:.0f} of {len(at_dte)} yrs" if pd.notna(pctile) else "—"),
-    ])
+_kpi_row([
+    (f"{current} OI, {unit_txt}", f"{cur_oi:,.0f}"),
+    ("As of", meta[current]["last_date"].strftime("%b %d, %Y")),
+    ("DTE", f"{cur_dte}"),
+    (f"vs {n_avg}Y mean", f"{mean_ref:,.0f}" if pd.notna(mean_ref) else "—", _pct(cur_oi, mean_ref)),
+    (f"vs {prev_lbl}", f"{prev_ref:,.0f}" if pd.notna(prev_ref) else "—", _pct(cur_oi, prev_ref)),
+    ("Percentile", f"P{pctile:.0f} of {len(at_dte)} yrs" if pd.notna(pctile) else "—"),
+])
 
-    if meta[current]["missing"]:
-        st.warning(f"{current} is missing {', '.join(meta[current]['missing'])}, so it reads lower than other years.")
+if meta[current]["missing"]:
+    st.warning(f"{current} is missing {', '.join(meta[current]['missing'])}, so it reads lower than other years.")
 
-    with st.container(key="nav_view"):
-        view = st.segmented_control("View", ["Chart", "Data"], default="Chart",
-                                    key="seas_view", label_visibility="collapsed") or "Chart"
+with st.container(key="nav_view"):
+    view = st.segmented_control("View", ["Chart", "Data"], default="Chart",
+                                key="seas_view", label_visibility="collapsed") or "Chart"
 
-    # ── Chart ─────────────────────────────────────────────────────────────────────
-    if view == "Chart":
-        fig = go.Figure()
-        if show_band and not band.empty and avg_years:
-            fig.add_trace(go.Scatter(x=band.index, y=band["hi"], mode="lines", name="Min-Max",
-                                     line=dict(width=0), hoverinfo="skip", showlegend=False))
-            fig.add_trace(go.Scatter(x=band.index, y=band["lo"], mode="lines", name="Min-Max",
-                                     line=dict(width=0), fill="tonexty", fillcolor=BAND_OUTER,
-                                     hoverinfo="skip"))
-            fig.add_trace(go.Scatter(x=band.index, y=band["p75"], mode="lines",
-                                     name="25th-75th Pct", line=dict(width=0),
-                                     hoverinfo="skip", showlegend=False))
-            fig.add_trace(go.Scatter(x=band.index, y=band["p25"], mode="lines",
-                                     name="25th-75th Pct", line=dict(width=0), fill="tonexty",
-                                     fillcolor=BAND_INNER, hoverinfo="skip"))
-        if avg_years:
-            fig.add_trace(go.Scatter(
-                x=band.index, y=band["mean"], mode="lines", name=f"{n_avg}Y Mean",
-                line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
-                hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
-
-        # Every year stops when its front leg expires, so nothing is drawn below
-        # ~90 days for a Z+H basket; a plain reversed autorange still ran the axis
-        # to 0 and left a fifth of the plot empty. Stop where the drawn data stops.
-        # Computed before the trace loop (not just at layout time) so each line's
-        # own end-of-series label can skip itself if that point falls off-screen.
-        x_lo = max(0, min(int(built[l].index.min()) for l in set(cmp_years) | {current} | set(avg_years)) - 5)
-
-        # The two most recent comparison years (current excluded -- it already
-        # gets its own boldest, brightest line below) are drawn bold and opaque;
-        # the rest fade back, both in the line itself and its end label. Without
-        # this a year like a just-opened 27/28 -- real data, but only a few
-        # hundred lots deep into a chart whose band is thick with older years --
-        # was there in the legend but effectively invisible against the shading.
-        _bold = set(sorted(l for l in cmp_years if l != current)[-2:])
-        # Faded (older) lines drawn first, bold ones last, so a bold line is never
-        # drawn UNDER an older one crossing it -- draw order is z-order in Plotly.
-        _order = sorted(range(len(cmp_years)), key=lambda k: cmp_years[k] in _bold)
-        for i in _order:
-            lbl = cmp_years[i]
-            if lbl == current:
-                continue
-            color = YEAR_COLORS[i % len(YEAR_COLORS)]
-            bold = lbl in _bold
-            fig.add_trace(go.Scatter(
-                x=aligned.index, y=aligned[lbl], mode="lines", name=lbl,
-                line=dict(color=color, width=2.8 if bold else 1.3),
-                opacity=1.0 if bold else 0.4,
-                hovertemplate="%{y:,.0f}<extra>" + lbl + "</extra>"))
-            # A small label at the line's own end -- same treatment `current` gets
-            # below, just quieter (smaller, that year's own line colour) so a
-            # crowded chart of several years can still be read at a glance
-            # without hovering each line to see which is which.
-            s_end = aligned[lbl].dropna()
-            if not s_end.empty:
-                end_dte = int(s_end.index.min())
-                if end_dte >= x_lo:
-                    fig.add_annotation(x=end_dte, y=s_end.loc[end_dte],
-                                       text=f" <b>{lbl}</b>" if bold else f" {lbl}",
-                                       showarrow=False, xanchor="left", opacity=1.0 if bold else 0.55,
-                                       font=dict(color=color, size=10 if bold else 8, family="Inter, sans-serif"))
-
+# ── Chart ─────────────────────────────────────────────────────────────────────
+if view == "Chart":
+    fig = go.Figure()
+    if show_band and not band.empty and avg_years:
+        fig.add_trace(go.Scatter(x=band.index, y=band["hi"], mode="lines", name="Min-Max",
+                                 line=dict(width=0), hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=band.index, y=band["lo"], mode="lines", name="Min-Max",
+                                 line=dict(width=0), fill="tonexty", fillcolor=BAND_OUTER,
+                                 hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=band.index, y=band["p75"], mode="lines",
+                                 name="25th-75th Pct", line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=band.index, y=band["p25"], mode="lines",
+                                 name="25th-75th Pct", line=dict(width=0), fill="tonexty",
+                                 fillcolor=BAND_INNER, hoverinfo="skip"))
+    if avg_years:
         fig.add_trace(go.Scatter(
-            x=aligned.index, y=aligned[current], mode="lines", name=current,
-            line=dict(color=CURRENT_COLOR, width=3),
-            hovertemplate="%{y:,.0f}<extra>" + current + "</extra>"))
-        if cur_dte <= max_dte:
-            fig.add_vline(x=cur_dte, line=dict(color="rgba(0,0,0,0.18)", width=1, dash="dot"))
-            fig.add_trace(go.Scatter(x=[cur_dte], y=[cur_oi], mode="markers",
-                                     marker=dict(color=CURRENT_COLOR, size=9,
-                                                 line=dict(color="white", width=1.5)),
-                                     showlegend=False, hoverinfo="skip"))
-            fig.add_annotation(x=cur_dte, y=cur_oi, text=f" {current}", showarrow=False,
-                               xanchor="left",
-                               font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
+            x=band.index, y=band["mean"], mode="lines", name=f"{n_avg}Y Mean",
+            line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
+            hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
 
-        fig.update_layout(
-            height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
-            font=dict(color=C["font"], family="Inter, sans-serif"),
-            margin=dict(l=70, r=60, t=20, b=70), hovermode="x unified",
-            xaxis=dict(title="Days to back-leg expiry", range=[max_dte, x_lo],
-                       showgrid=True, gridcolor=C["grid"], zeroline=False,
-                       tickfont=dict(size=11, color=C["font"])),
-            yaxis=dict(title=f"Open Interest ({unit_txt})", showgrid=True, gridcolor=C["grid"],
-                       zeroline=False, tickformat=",", tickfont=dict(size=11, color=C["font"])),
-            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
-                        bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    # Every year stops when its front leg expires, so nothing is drawn below
+    # ~90 days for a Z+H basket; a plain reversed autorange still ran the axis
+    # to 0 and left a fifth of the plot empty. Stop where the drawn data stops.
+    # Computed before the trace loop (not just at layout time) so each line's
+    # own end-of-series label can skip itself if that point falls off-screen.
+    x_lo = max(0, min(int(built[l].index.min()) for l in set(cmp_years) | {current} | set(avg_years)) - 5)
 
-        if n_avg:
-            st.caption(f"Average and band: last {n_avg} years ({avg_years[0]} to {avg_years[-1]}).")
+    # The two most recent comparison years (current excluded -- it already
+    # gets its own boldest, brightest line below) are drawn bold and opaque;
+    # the rest fade back, both in the line itself and its end label. Without
+    # this a year like a just-opened 27/28 -- real data, but only a few
+    # hundred lots deep into a chart whose band is thick with older years --
+    # was there in the legend but effectively invisible against the shading.
+    _bold = set(sorted(l for l in cmp_years if l != current)[-2:])
+    # Faded (older) lines drawn first, bold ones last, so a bold line is never
+    # drawn UNDER an older one crossing it -- draw order is z-order in Plotly.
+    _order = sorted(range(len(cmp_years)), key=lambda k: cmp_years[k] in _bold)
+    for i in _order:
+        lbl = cmp_years[i]
+        if lbl == current:
+            continue
+        color = YEAR_COLORS[i % len(YEAR_COLORS)]
+        bold = lbl in _bold
+        fig.add_trace(go.Scatter(
+            x=aligned.index, y=aligned[lbl], mode="lines", name=lbl,
+            line=dict(color=color, width=2.8 if bold else 1.3),
+            opacity=1.0 if bold else 0.4,
+            hovertemplate="%{y:,.0f}<extra>" + lbl + "</extra>"))
+        # A small label at the line's own end -- same treatment `current` gets
+        # below, just quieter (smaller, that year's own line colour) so a
+        # crowded chart of several years can still be read at a glance
+        # without hovering each line to see which is which.
+        s_end = aligned[lbl].dropna()
+        if not s_end.empty:
+            end_dte = int(s_end.index.min())
+            if end_dte >= x_lo:
+                fig.add_annotation(x=end_dte, y=s_end.loc[end_dte],
+                                   text=f" <b>{lbl}</b>" if bold else f" {lbl}",
+                                   showarrow=False, xanchor="left", opacity=1.0 if bold else 0.55,
+                                   font=dict(color=color, size=10 if bold else 8, family="Inter, sans-serif"))
 
-    # ── Data ──────────────────────────────────────────────────────────────────────
-    SEAS_TBL_CSS = """
-    <style>
-    .seas-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
-    .seas-tbl { border-collapse:collapse; font-size:10px; font-family:'Inter',sans-serif;
-                white-space:nowrap; width:100%; }
-    .seas-tbl th, .seas-tbl td { padding:2px 6px; text-align:right;
-                                 border-bottom:1px solid #f0f0f0; }
-    .seas-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2;
-                   text-align:right; }
-    /* box-shadow rather than border-left: border-collapse drops adjacent-cell
-       borders depending on which side wins the merge, box-shadow always shows. */
-    .seas-tbl .dte { position:sticky; left:0; background:#fff; text-align:center;
-                     font-weight:600; z-index:1; box-shadow: inset -2px 0 0 0 #374151; }
-    .seas-tbl th.dte { background:#fafafa; z-index:3; }
-    .seas-tbl .cur { font-weight:700; }
-    .seas-tbl .mean { background:#fffbea; font-weight:600; }
-    .seas-tbl tbody tr:hover td { background:#f0f9ff !important; }
-    .seas-cap { font-size:.72rem; font-weight:600; color:#6b7280; margin:0 0 4px; }
-    </style>
-    """
+    fig.add_trace(go.Scatter(
+        x=aligned.index, y=aligned[current], mode="lines", name=current,
+        line=dict(color=CURRENT_COLOR, width=3),
+        hovertemplate="%{y:,.0f}<extra>" + current + "</extra>"))
+    if cur_dte <= max_dte:
+        fig.add_vline(x=cur_dte, line=dict(color="rgba(0,0,0,0.18)", width=1, dash="dot"))
+        fig.add_trace(go.Scatter(x=[cur_dte], y=[cur_oi], mode="markers",
+                                 marker=dict(color=CURRENT_COLOR, size=9,
+                                             line=dict(color="white", width=1.5)),
+                                 showlegend=False, hoverinfo="skip"))
+        fig.add_annotation(x=cur_dte, y=cur_oi, text=f" {current}", showarrow=False,
+                           xanchor="left",
+                           font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
+
+    fig.update_layout(
+        height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
+        font=dict(color=C["font"], family="Inter, sans-serif"),
+        margin=dict(l=70, r=60, t=20, b=70), hovermode="x unified",
+        xaxis=dict(title="Days to back-leg expiry", range=[max_dte, x_lo],
+                   showgrid=True, gridcolor=C["grid"], zeroline=False,
+                   tickfont=dict(size=11, color=C["font"])),
+        yaxis=dict(title=f"Open Interest ({unit_txt})", showgrid=True, gridcolor=C["grid"],
+                   zeroline=False, tickformat=",", tickfont=dict(size=11, color=C["font"])),
+        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    if n_avg:
+        st.caption(f"Average and band: last {n_avg} years ({avg_years[0]} to {avg_years[-1]}).")
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+SEAS_TBL_CSS = """
+<style>
+.seas-wrap { overflow:auto; max-height:640px; border:1px solid #e5e7eb; border-radius:6px; }
+.seas-tbl { border-collapse:collapse; font-size:10px; font-family:'Inter',sans-serif;
+            white-space:nowrap; width:100%; }
+.seas-tbl th, .seas-tbl td { padding:2px 6px; text-align:right;
+                             border-bottom:1px solid #f0f0f0; }
+.seas-tbl th { position:sticky; top:0; background:#fafafa; font-weight:600; z-index:2;
+               text-align:right; }
+/* box-shadow rather than border-left: border-collapse drops adjacent-cell
+   borders depending on which side wins the merge, box-shadow always shows. */
+.seas-tbl .dte { position:sticky; left:0; background:#fff; text-align:center;
+                 font-weight:600; z-index:1; box-shadow: inset -2px 0 0 0 #374151; }
+.seas-tbl th.dte { background:#fafafa; z-index:3; }
+.seas-tbl .cur { font-weight:700; }
+.seas-tbl .mean { background:#fffbea; font-weight:600; }
+.seas-tbl tbody tr:hover td { background:#f0f9ff !important; }
+.seas-cap { font-size:.72rem; font-weight:600; color:#6b7280; margin:0 0 4px; }
+</style>
+"""
 
 
-    def _seas_table_html(frame, style_fn, fmt, cur_label, mean_label):
-        """One HTML table: DTE down the left, one column per crop year.
+def _seas_table_html(frame, style_fn, fmt, cur_label, mean_label):
+    """One HTML table: DTE down the left, one column per crop year.
 
-        `style_fn(value)` returns the inline CSS for a cell — a heatmap tint for
-        levels, a diverging bar for changes — so both tables read with the same
-        conditional formatting as the comprehensive grid."""
-        head = "".join(
-            f'<th class="{"mean" if c == mean_label else ""}">{c}</th>' for c in frame.columns)
-        rows = []
-        for dte, row in frame.iterrows():
-            cells = []
-            for c in frame.columns:
-                v = row[c]
-                cls = "mean" if c == mean_label else ("cur" if c == cur_label else "")
-                if pd.isna(v):
-                    cells.append(f'<td class="{cls}">—</td>')
-                else:
-                    cells.append(f'<td class="{cls}" style="{style_fn(v)}">{fmt(v)}</td>')
-            rows.append(f'<tr><td class="dte">{int(dte)}</td>{"".join(cells)}</tr>')
-        return (f'<div class="seas-wrap"><table class="seas-tbl">'
-                f'<thead><tr><th class="dte">DTE</th>{head}</tr></thead>'
-                f'<tbody>{"".join(rows)}</tbody></table></div>')
+    `style_fn(value)` returns the inline CSS for a cell — a heatmap tint for
+    levels, a diverging bar for changes — so both tables read with the same
+    conditional formatting as the comprehensive grid."""
+    head = "".join(
+        f'<th class="{"mean" if c == mean_label else ""}">{c}</th>' for c in frame.columns)
+    rows = []
+    for dte, row in frame.iterrows():
+        cells = []
+        for c in frame.columns:
+            v = row[c]
+            cls = "mean" if c == mean_label else ("cur" if c == cur_label else "")
+            if pd.isna(v):
+                cells.append(f'<td class="{cls}">—</td>')
+            else:
+                cells.append(f'<td class="{cls}" style="{style_fn(v)}">{fmt(v)}</td>')
+        rows.append(f'<tr><td class="dte">{int(dte)}</td>{"".join(cells)}</tr>')
+    return (f'<div class="seas-wrap"><table class="seas-tbl">'
+            f'<thead><tr><th class="dte">DTE</th>{head}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
-    if view == "Data":
-        _c, _ = st.columns([1, 3])
-        with _c:
-            table_step = st.slider("Days per row", 1, 14, 7, key="seas_step")
-        tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
-        mean_label = f"{n_avg}Y Mean" if avg_years else None
+if view == "Data":
+    _c, _ = st.columns([1, 3])
+    with _c:
+        table_step = st.slider("Days per row", 1, 14, 7, key="seas_step")
+    tbl_cols = [l for l in labels_all if l in set(cmp_years) | {current}]
+    mean_label = f"{n_avg}Y Mean" if avg_years else None
 
-        # DTE descending, so the table runs earliest -> latest down the page, the
-        # way the desk sheet does. .iloc for both the reversal and the step: purely
-        # positional, so it cannot pick up label-slicing semantics from the index.
-        lvl = aligned[tbl_cols].iloc[::-1].iloc[::table_step].copy()
-        if mean_label:
-            # reindex onto the rows the table actually has, NOT an independent
-            # reversed-and-stepped slice of `band`. band is .dropna(how="all")-ed,
-            # so when the averaged years carry no data all the way out to max_dte
-            # its top row is lower than the table's, and the two step sequences
-            # drift out of phase: they can have zero rows in common, so the whole
-            # Mean column rendered as em-dashes.
-            lvl[mean_label] = band["mean"].reindex(lvl.index)
+    # DTE descending, so the table runs earliest -> latest down the page, the
+    # way the desk sheet does. .iloc for both the reversal and the step: purely
+    # positional, so it cannot pick up label-slicing semantics from the index.
+    lvl = aligned[tbl_cols].iloc[::-1].iloc[::table_step].copy()
+    if mean_label:
+        # reindex onto the rows the table actually has, NOT an independent
+        # reversed-and-stepped slice of `band`. band is .dropna(how="all")-ed,
+        # so when the averaged years carry no data all the way out to max_dte
+        # its top row is lower than the table's, and the two step sequences
+        # drift out of phase: they can have zero rows in common, so the whole
+        # Mean column rendered as em-dashes.
+        lvl[mean_label] = band["mean"].reindex(lvl.index)
 
-        # Change between consecutive rows, i.e. over one table step, not one day —
-        # taken after the resampling so it matches what is actually on screen.
-        chg = lvl.diff()
+    # Change between consecutive rows, i.e. over one table step, not one day —
+    # taken after the resampling so it matches what is actually on screen.
+    chg = lvl.diff()
 
-        # Scales are global across the whole table, not per column: these columns
-        # are the same basket in different crop years, so per-column scaling would
-        # normalise away exactly the difference being looked for (23/24 built far
-        # harder than 24/25). Levels tint against the level range, changes bar
-        # against the largest absolute change anywhere in the table.
-        vmin = float(lvl.min().min()) if lvl.notna().any().any() else 0.0
-        vmax = float(lvl.max().max()) if lvl.notna().any().any() else 1.0
-        cmax = float(chg.abs().max().max()) if chg.notna().any().any() else 1.0
-        cmax = cmax if cmax > 0 else 1.0
+    # Scales are global across the whole table, not per column: these columns
+    # are the same basket in different crop years, so per-column scaling would
+    # normalise away exactly the difference being looked for (23/24 built far
+    # harder than 24/25). Levels tint against the level range, changes bar
+    # against the largest absolute change anywhere in the table.
+    vmin = float(lvl.min().min()) if lvl.notna().any().any() else 0.0
+    vmax = float(lvl.max().max()) if lvl.notna().any().any() else 1.0
+    cmax = float(chg.abs().max().max()) if chg.notna().any().any() else 1.0
+    cmax = cmax if cmax > 0 else 1.0
 
-        st.download_button("Download table (CSV)", data=lvl.rename_axis("DTE").to_csv().encode("utf-8"),
-                           file_name=f"oi_seasonal_{bsig}_{unit_txt}.csv", mime="text/csv")
-        st.markdown(SEAS_TBL_CSS, unsafe_allow_html=True)
-        t1, t2 = st.columns(2)
-        with t1:
-            st.markdown(f'<div class="seas-cap">Open Interest ({unit_txt})</div>', unsafe_allow_html=True)
-            st.markdown(_seas_table_html(lvl, lambda v: _oi_heatmap_style(v, vmin, vmax),
-                                         lambda v: f"{v:,.0f}", current, mean_label),
-                        unsafe_allow_html=True)
-        with t2:
-            st.markdown(f'<div class="seas-cap">OI Change, {unit_txt} (per {table_step}d step)</div>',
-                        unsafe_allow_html=True)
-            st.markdown(_seas_table_html(chg, lambda v: _oi_chg_style(v, cmax),
-                                         lambda v: f"{v:+,.0f}", current, mean_label),
-                        unsafe_allow_html=True)
+    st.download_button("Download table (CSV)", data=lvl.rename_axis("DTE").to_csv().encode("utf-8"),
+                       file_name=f"oi_seasonal_{bsig}_{unit_txt}.csv", mime="text/csv")
+    st.markdown(SEAS_TBL_CSS, unsafe_allow_html=True)
+    t1, t2 = st.columns(2)
+    with t1:
+        st.markdown(f'<div class="seas-cap">Open Interest ({unit_txt})</div>', unsafe_allow_html=True)
+        st.markdown(_seas_table_html(lvl, lambda v: _oi_heatmap_style(v, vmin, vmax),
+                                     lambda v: f"{v:,.0f}", current, mean_label),
+                    unsafe_allow_html=True)
+    with t2:
+        st.markdown(f'<div class="seas-cap">OI Change, {unit_txt} (per {table_step}d step)</div>',
+                    unsafe_allow_html=True)
+        st.markdown(_seas_table_html(chg, lambda v: _oi_chg_style(v, cmax),
+                                     lambda v: f"{v:+,.0f}", current, mean_label),
+                    unsafe_allow_html=True)
 
