@@ -298,46 +298,43 @@ with st.container(key="nav_basket"):
 custom_on = basket_mode == "Custom"
 
 if custom_on:
-    # Markets capped at 2, so one row of fixed columns fits everything --
-    # Markets, up to two per-market Months pickers, the season-opener
-    # override, and Unit -- side by side instead of Markets/Months stacked
-    # above a near-empty full-width "Starts with" row.
-    c_mk, c_m1, c_m2, c_open, c_unit = st.columns([1, 1.15, 1.15, 1.15, 0.85])
-    with c_mk:
-        markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
-                                 max_selections=2, key="seas_cmt_markets")
+    # One thing per row: Markets, then each selected market's own Months
+    # picker gets its own full-width row (not squeezed side by side with the
+    # other market's), then Starts-with + Unit finish it off together, set
+    # apart from the month pickers above so it reads as "one more setting
+    # for the whole basket", not a third thing crammed into the same line.
+    markets = st.multiselect("Markets", list(COMMODITIES), default=["KC"],
+                             max_selections=2, key="seas_cmt_markets")
     basket = {}
     for i, mk in enumerate(markets):
-        with (c_m1, c_m2)[i]:
-            opts = _months_traded(mk, MTIMES[mk])
-            default = [m for m in ("Z", "H") if m in opts] if i == 0 else []
-            picked = st.multiselect(f"{mk} months", opts, default=default, key=f"seas_months_{mk}",
-                                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
-            if picked:
-                basket[mk] = sorted(picked, key=MONTH_ORDER.get)
+        opts = _months_traded(mk, MTIMES[mk])
+        default = [m for m in ("Z", "H") if m in opts] if i == 0 else []
+        picked = st.multiselect(f"{mk} months", opts, default=default, key=f"seas_months_{mk}",
+                                format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]})")
+        if picked:
+            basket[mk] = sorted(picked, key=MONTH_ORDER.get)
 
     open_month = None
-    if basket:
-        _all_m = sorted({m for ms in basket.values() for m in ms}, key=MONTH_ORDER.get)
-        if len(_all_m) > 1:
-            # Mar + Dec could mean "Mar then Dec, both this year" or "Dec
-            # this year, Mar next" -- both are valid readings, so the auto
-            # rule's guess (shortest span) is offered as the default and can
-            # be corrected here rather than left to silently decide. Each
-            # option is tagged with its own market -- with two markets in
-            # play, "Z (Dec)" alone doesn't say whether that's the first or
-            # second one's December.
-            _owner = {}
-            for mk, ms in basket.items():
-                for m in ms:
-                    _owner.setdefault(m, []).append(mk)
-            _auto_num = _cycle_start(_all_m)
-            _auto = next(m for m in _all_m if MONTH_ORDER[m] == _auto_num)
-            with c_open:
-                open_month = st.selectbox(
-                    "Starts with", _all_m, index=_all_m.index(_auto),
-                    key=f"seas_open_{'_'.join(_all_m)}",
-                    format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]}, {'/'.join(_owner.get(m, []))})")
+    _all_m = sorted({m for ms in basket.values() for m in ms}, key=MONTH_ORDER.get) if basket else []
+    c_open, c_unit = st.columns([2, 1])
+    if len(_all_m) > 1:
+        # Mar + Dec could mean "Mar then Dec, both this year" or "Dec this
+        # year, Mar next" -- both are valid readings, so the auto rule's
+        # guess (shortest span) is offered as the default and can be
+        # corrected here rather than left to silently decide. Each option is
+        # tagged with its own market -- with two markets in play, "Z (Dec)"
+        # alone doesn't say whether that's the first or second one's Dec.
+        _owner = {}
+        for mk, ms in basket.items():
+            for m in ms:
+                _owner.setdefault(m, []).append(mk)
+        _auto_num = _cycle_start(_all_m)
+        _auto = next(m for m in _all_m if MONTH_ORDER[m] == _auto_num)
+        with c_open:
+            open_month = st.selectbox(
+                "Starts with", _all_m, index=_all_m.index(_auto),
+                key=f"seas_open_{'_'.join(_all_m)}",
+                format_func=lambda m: f"{m} ({MONTH_NAMES[m][:3]}, {'/'.join(_owner.get(m, []))})")
 
     with c_unit:
         unit = st.radio("Unit", ["Lots", "Tonnes"], key="seas_unit")
