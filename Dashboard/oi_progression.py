@@ -106,16 +106,18 @@ def _hist_band(dense_df: pd.DataFrame, metric_col: str, x: str = "days_to_expiry
     band = g.agg(hist_min="min", hist_max="max", hist_mean="mean").reset_index()
     q25 = g.quantile(0.25).rename("hist_q25").reset_index()
     q75 = g.quantile(0.75).rename("hist_q75").reset_index()
-    band = band.merge(q25, on=x).merge(q75, on=x)
+    q10 = g.quantile(0.10).rename("hist_q10").reset_index()
+    q90 = g.quantile(0.90).rename("hist_q90").reset_index()
+    band = band.merge(q25, on=x).merge(q75, on=x).merge(q10, on=x).merge(q90, on=x)
     band = band.sort_values(x)
-    for c in ["hist_mean", "hist_q25", "hist_q75"]:
+    for c in ["hist_mean", "hist_q25", "hist_q75", "hist_q10", "hist_q90"]:
         band[c] = band[c].rolling(7, center=True, min_periods=1).mean()
     # min/max stay the true extremes (unsmoothed), so at a local spike the
     # smoothed quartiles could sit outside them and the inner fill would
     # render outside the outer one. Widen the envelope rather than smoothing
     # min/max, which would stop them being extremes at all.
-    band["hist_max"] = band[["hist_max", "hist_q75"]].max(axis=1)
-    band["hist_min"] = band[["hist_min", "hist_q25"]].min(axis=1)
+    band["hist_max"] = band[["hist_max", "hist_q90"]].max(axis=1)
+    band["hist_min"] = band[["hist_min", "hist_q10"]].min(axis=1)
     return band
 
 
@@ -335,6 +337,7 @@ def build_chart(band, curr_df, metric_col, current_sym,
                 show_individual=False, hist_df=None, ind_metric=None,
                 height=500):
     fig = go.Figure()
+    mid_color = C['oi_mid']   # all metric families share the Cotton teal bands
 
     # Outer band
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_max"],
@@ -343,6 +346,14 @@ def build_chart(band, curr_df, metric_col, current_sym,
         mode="lines", line=dict(width=0),
         fill="tonexty", fillcolor=outer_color,
         name="Min-Max Range", hoverinfo="skip"))
+
+    # Mid band q10-q90
+    fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q90"],
+        mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q10"],
+        mode="lines", line=dict(width=0),
+        fill="tonexty", fillcolor=mid_color,
+        name="10th-90th Pct", hoverinfo="skip"))
 
     # Inner band q25-q75
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q75"],
@@ -354,7 +365,7 @@ def build_chart(band, curr_df, metric_col, current_sym,
 
     # Mean line
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_mean"],
-        mode="lines", line=dict(color=avg_color, width=2, dash="dash"),
+        mode="lines", line=dict(color=avg_color, width=1.5, dash="dot"),
         name="Historical Mean",
         hovertemplate=f"DTE: %{{x}}<br>Mean: %{{y:{y_fmt}}}{y_suffix}<extra>Mean</extra>"))
 
@@ -416,7 +427,7 @@ def kpi_row(vals: list):
         delta = item[2] if len(item) > 2 else None
         delta_html = ""
         if delta:
-            dc = "#dc2626" if str(delta).strip().startswith("-") else "#16a34a"
+            dc = "#c94a4a" if str(delta).strip().startswith("-") else "#1f9d6f"
             delta_html = f"<b style='color:{dc};font-weight:700;margin-left:4px'>{delta}</b>"
         chips.append(
             f"<span class='kpichip'><span class='kpil'>{label}</span> "
@@ -443,13 +454,18 @@ def add_oi_traces(fig, band, curr_df, current_sym, oi_fmt,
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_min"],
         mode="lines", line=dict(width=0), fill="tonexty", fillcolor=C["oi_outer"],
         name="Min-Max", showlegend=show_legend, hoverinfo="skip", legendgroup="outer"), **kw)
+    fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q90"],
+        mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"), **kw)
+    fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q10"],
+        mode="lines", line=dict(width=0), fill="tonexty", fillcolor=C["oi_mid"],
+        name="10-90 Pct", showlegend=show_legend, hoverinfo="skip", legendgroup="mid"), **kw)
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q75"],
         mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"), **kw)
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_q25"],
         mode="lines", line=dict(width=0), fill="tonexty", fillcolor=C["oi_inner"],
         name="25-75 Pct", showlegend=show_legend, hoverinfo="skip", legendgroup="inner"), **kw)
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_mean"],
-        mode="lines", line=dict(color=C["oi_avg"], width=1.5, dash="dash"),
+        mode="lines", line=dict(color=C["oi_avg"], width=1.5, dash="dot"),
         name="Mean", showlegend=show_legend, legendgroup="mean",
         hovertemplate=f"DTE: %{{x}}<br>Mean: %{{y:{oi_fmt}}}<extra>Mean</extra>"), **kw)
     fig.add_trace(go.Scatter(x=curr_df["days_to_expiry"], y=curr_df["open_interest"],
@@ -619,7 +635,7 @@ def _leg_suffix(sym: str) -> str:
 def _sign_color(v) -> str:
     if pd.isna(v) or v == 0:
         return "#1d1d1f"
-    return "#16a34a" if v > 0 else "#dc2626"
+    return "#1f9d6f" if v > 0 else "#c94a4a"
 
 
 def _spot_series(oi_piv: pd.DataFrame, px_piv: pd.DataFrame):
@@ -1017,12 +1033,12 @@ def build_oi_spread_chart(commodity: str, table_lookback: int, oi_choice: str, l
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Scatter(x=dates, y=oi_series.values, name=oi_name,
-                             line=dict(color="#1a56db", width=2)), secondary_y=False)
+                             line=dict(color="#0a2463", width=2)), secondary_y=False)
     if have_spread:
         fig.add_trace(go.Scatter(x=dates, y=spread_series.values, name=spread_name,
-                                 line=dict(color="#f59e0b", width=2)), secondary_y=True)
+                                 line=dict(color="#c98a1f", width=2)), secondary_y=True)
     fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
-                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      font=dict(family="Inter, sans-serif", color="#1a1a2e", size=11),
                       legend=dict(orientation="h", y=1.12, x=0),
                       margin=dict(l=55, r=55, t=30, b=40))
     fig.update_yaxes(title_text=oi_name, secondary_y=False, gridcolor="rgba(0,0,0,.07)")
@@ -1056,8 +1072,8 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
     # One hue per DATE rather than per metric: the new date is blue (bar AND
     # price line), the older date amber, so a bar and the price line belonging
     # to the same snapshot are matched at a glance without reading the legend.
-    NEW_LINE, NEW_BAR = "#1e3a8a", "rgba(30,58,138,.42)"
-    OLD_LINE, OLD_BAR = "#f59e0b", "rgba(245,158,11,.38)"
+    NEW_LINE, NEW_BAR = "#0a2463", "rgba(10,36,99,.42)"
+    OLD_LINE, OLD_BAR = "#c98a1f", "rgba(201,138,31,.38)"
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=syms, y=oi_row.reindex(syms).values, name=f"OI ({d_label})",
@@ -1082,7 +1098,7 @@ def build_term_structure_chart(commodity: str, snapshot_date, older_date=None, m
                                  hovertemplate="%{x}<br>Price: %{y:.2f}<extra></extra>"), secondary_y=True)
 
     fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
-                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      font=dict(family="Inter, sans-serif", color="#1a1a2e", size=11),
                       legend=dict(orientation="h", y=1.1, x=0),
                       margin=dict(l=55, r=55, t=30, b=40))
     fig.update_yaxes(title_text="Open Interest", secondary_y=False, gridcolor="rgba(0,0,0,.07)")
@@ -1117,7 +1133,7 @@ def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
         min_ois.append(min(o1, o2))
     if not pairs:
         return None
-    marker_colors = ["#16a34a" if s >= 0 else "#dc2626" for s in spreads]
+    marker_colors = ["#1f9d6f" if s >= 0 else "#c94a4a" for s in spreads]
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(go.Bar(x=pairs, y=min_ois, name="Min OI", marker_color="rgba(156,163,175,.55)",
@@ -1128,7 +1144,7 @@ def build_curve_spread_chart(commodity: str, snapshot_date, mtime: float = 0.0):
                              hovertemplate="%{x}<br>Spread: %{y:+.2f}<extra></extra>"), secondary_y=True)
     fig.add_hline(y=0, line_color="#cccccc", line_width=1, secondary_y=True)
     fig.update_layout(height=340, plot_bgcolor="#fff", paper_bgcolor="#fff",
-                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      font=dict(family="Inter, sans-serif", color="#1a1a2e", size=11),
                       legend=dict(orientation="h", y=1.12, x=0),
                       margin=dict(l=55, r=55, t=30, b=40))
     fig.update_yaxes(title_text="Min OI", secondary_y=False, gridcolor="rgba(0,0,0,.07)")
@@ -1168,14 +1184,14 @@ def build_oi_price_scatter(commodity: str, table_lookback: int, contract_choice:
 
     fig = go.Figure(go.Scatter(
         x=oi_chg_s[valid].values, y=px_chg_s[valid].values, mode="markers",
-        marker=dict(size=7, color="#1a56db", opacity=0.65, line=dict(width=0.5, color="#fff")),
+        marker=dict(size=7, color="#0a2463", opacity=0.65, line=dict(width=0.5, color="#fff")),
         text=[d.strftime("%d %b %Y") for d in dates_v],
         hovertemplate="%{text}<br>OI Chg: %{x:+,.0f}<br>Price Chg: %{y:+.2f}%<extra></extra>",
     ))
     fig.add_hline(y=0, line_color="#e5e7eb", line_width=1)
     fig.add_vline(x=0, line_color="#e5e7eb", line_width=1)
     fig.update_layout(height=380, plot_bgcolor="#fff", paper_bgcolor="#fff",
-                      font=dict(family="Inter, sans-serif", color="#1a1a1a", size=11),
+                      font=dict(family="Inter, sans-serif", color="#1a1a2e", size=11),
                       showlegend=False, margin=dict(l=55, r=25, t=30, b=40),
                       xaxis=dict(title=f"{name} OI Change (lots)", gridcolor="rgba(0,0,0,.07)"),
                       yaxis=dict(title="Price Change (%)", gridcolor="rgba(0,0,0,.07)"))
@@ -1444,6 +1460,13 @@ st.markdown("""
 [data-testid="stMetricLabel"] { font-size:0.70rem !important; color:#888; }
 [data-testid="stMetricValue"] { font-size:1.10rem !important; font-weight:600; }
 [data-testid="stMetricDelta"] { font-size:0.70rem !important; }
+h1, h2, h3, h4, h5, h6 { color:#0a2463 !important; }
+div[role="radiogroup"] { background:#eef0f6; padding:4px; border-radius:999px; gap:2px; display:inline-flex; flex-wrap:wrap; }
+div[role="radiogroup"] label { background:transparent !important; border-radius:999px !important; padding:4px 12px !important; margin:0 !important; }
+div[role="radiogroup"] label[data-baseweb="radio"] > div:first-child { display:none; }
+div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] p { font-size:12px !important; color:#5a6688 !important; }
+div[role="radiogroup"] label:has(input:checked) { background:#0a2463 !important; }
+div[role="radiogroup"] label:has(input:checked) div[data-testid="stMarkdownContainer"] p { color:#ffffff !important; font-weight:600; }
 </style>""", unsafe_allow_html=True)
 
 
@@ -1682,8 +1705,8 @@ _MATRIX_CSS = """<style>
   text-transform:none;letter-spacing:.02em;border-bottom:1px solid #eef0f3}
 .mx-stat td{padding:2px 8px;border-bottom:none;font-weight:500}
 .mx-stat .yr{background:transparent;font-weight:600;color:#6b7280;border-right:none}
-.mx-stat .pos{color:#16a34a}
-.mx-stat .neg{color:#dc2626}
+.mx-stat .pos{color:#1f9d6f}
+.mx-stat .neg{color:#c94a4a}
 .mx-stat .flat{color:#6b7280}
 .mx-stat .net{border-left:1px solid #eef0f3}
 </style>"""
@@ -1883,13 +1906,18 @@ def _view_total_oi():
             fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_min"], mode="lines",
                 line=dict(width=0), fill="tonexty", fillcolor=C["oi_outer"],
                 name="Min-Max Range", hoverinfo="skip"))
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_q90"], mode="lines",
+                line=dict(width=0), showlegend=False, hoverinfo="skip"))
+            fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_q10"], mode="lines",
+                line=dict(width=0), fill="tonexty", fillcolor=C["oi_mid"],
+                name="10th-90th Pct", hoverinfo="skip"))
             fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_q75"], mode="lines",
                 line=dict(width=0), showlegend=False, hoverinfo="skip"))
             fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_q25"], mode="lines",
                 line=dict(width=0), fill="tonexty", fillcolor=C["oi_inner"],
                 name="25th-75th Pct", hoverinfo="skip"))
             fig_ts.add_trace(go.Scatter(x=bx, y=band_s["hist_mean"], mode="lines",
-                line=dict(color=C["oi_avg"], width=2, dash="dash"), name=f"{n_yrs}Y Mean",
+                line=dict(color=C["oi_avg"], width=1.5, dash="dot"), name=f"{n_yrs}Y Mean",
                 hovertemplate="Mean: %{y:,.0f}<extra></extra>"))
 
         if show_individual:
@@ -1902,7 +1930,7 @@ def _view_total_oi():
         prev = dense_s[dense_s["year"] == cy - 1]
         if not prev.empty:
             fig_ts.add_trace(go.Scatter(x=_dx(prev["doy"]), y=prev["total_oi"], mode="lines",
-                line=dict(color="#6b7280", width=1.6), name=str(cy - 1),
+                line=dict(color=C["prev"], width=1.8), name=str(cy - 1),
                 hovertemplate=f"{cy - 1}: %{{y:,.0f}}<extra></extra>"))
 
         cur = dense_s[dense_s["year"] == cy]
@@ -1949,7 +1977,7 @@ def _view_total_oi():
 
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Scatter(x=ts_v.index, y=ts_v.values, mode="lines", name="Total OI",
-            line=dict(color=C["oi_avg"], width=1.6),
+            line=dict(color=C["current"], width=1.8),
             hovertemplate="%{x|%d %b %Y}<br>Total OI: %{y:,.0f}<extra></extra>"))
         fig_hist.add_trace(go.Scatter(x=[ts_v.index[-1]], y=[ts_v.iloc[-1]], mode="markers",
             marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
@@ -2290,7 +2318,7 @@ def _view_flow():
             ("As of",           latest_flow["Date"].strftime("%b %d, %Y")),
         ])
 
-        bar_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in flow_win["oi_change"]]
+        bar_colors = ["#1f9d6f" if v >= 0 else "#c94a4a" for v in flow_win["oi_change"]]
 
         all_bdays_f    = pd.bdate_range(flow_win["Date"].min(), flow_win["Date"].max())
         missing_days_f = all_bdays_f.difference(pd.DatetimeIndex(flow_win["Date"].unique()))
@@ -2400,9 +2428,9 @@ def _view_flow():
             x_line = np.array([xs.min(), xs.max()])
 
             if oi_chg_mode == "Signed":
-                pt_colors = ["#16a34a" if v >= 0 else "#dc2626" for v in ys]
+                pt_colors = ["#1f9d6f" if v >= 0 else "#c94a4a" for v in ys]
             else:
-                pt_colors = "#4A7FD4"
+                pt_colors = "#0a2463"
 
             fig_sc = go.Figure()
             fig_sc.add_trace(go.Scatter(
@@ -2422,7 +2450,7 @@ def _view_flow():
             ))
             fig_sc.add_trace(go.Scatter(
                 x=[xs[-1]], y=[ys[-1]], mode="markers",
-                marker=dict(color="#f59e0b", size=13, symbol="star",
+                marker=dict(color="#c98a1f", size=13, symbol="star",
                            line=dict(color="white", width=1)),
                 name=f"Latest ({sc_win['Date'].iloc[-1].strftime('%b %d, %Y')})",
             ))

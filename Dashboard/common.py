@@ -53,33 +53,34 @@ MONTH_NAMES = {
 }
 
 C = {
-    # OI charts
-    "oi_outer":  "rgba(99, 149, 237, 0.10)",
-    "oi_inner":  "rgba(99, 149, 237, 0.28)",
-    "oi_avg":    "#4A7FD4",
-    # OI share
-    "sh_outer":  "rgba(52, 168, 83, 0.10)",
-    "sh_inner":  "rgba(52, 168, 83, 0.25)",
-    "sh_avg":    "#34A853",
-    # Vol/OI ratio
-    "vr_outer":  "rgba(20, 184, 166, 0.10)",
-    "vr_inner":  "rgba(20, 184, 166, 0.28)",
-    "vr_avg":    "#0D9488",
-    # Vol market share
-    "vs_outer":  "rgba(139, 92, 246, 0.10)",
-    "vs_inner":  "rgba(139, 92, 246, 0.28)",
-    "vs_avg":    "#7C3AED",
-    # Rolling volume
-    "rv_outer":  "rgba(245, 158, 11, 0.10)",
-    "rv_inner":  "rgba(245, 158, 11, 0.28)",
-    "rv_avg":    "#D97706",
+    "oi_outer":  "rgba(31, 138, 156, 0.08)",
+    "oi_mid":    "rgba(31, 138, 156, 0.16)",
+    "oi_inner":  "rgba(31, 138, 156, 0.28)",
+    "oi_avg":    "#4a5578",
+    "sh_outer":  "rgba(31, 138, 156, 0.08)",
+    "sh_mid":    "rgba(31, 138, 156, 0.16)",
+    "sh_inner":  "rgba(31, 138, 156, 0.28)",
+    "sh_avg":    "#4a5578",
+    "vr_outer":  "rgba(31, 138, 156, 0.08)",
+    "vr_mid":    "rgba(31, 138, 156, 0.16)",
+    "vr_inner":  "rgba(31, 138, 156, 0.28)",
+    "vr_avg":    "#4a5578",
+    "vs_outer":  "rgba(31, 138, 156, 0.08)",
+    "vs_mid":    "rgba(31, 138, 156, 0.16)",
+    "vs_inner":  "rgba(31, 138, 156, 0.28)",
+    "vs_avg":    "#4a5578",
+    "rv_outer":  "rgba(31, 138, 156, 0.08)",
+    "rv_mid":    "rgba(31, 138, 156, 0.16)",
+    "rv_inner":  "rgba(31, 138, 156, 0.28)",
+    "rv_avg":    "#4a5578",
     # Common
-    "current":   "#E8470A",
-    "individual":"rgba(160,160,160,0.4)",
-    "grid":      "rgba(0,0,0,0.07)",
+    "current":   "#0a2463",
+    "prev":      "#c94a4a",
+    "individual":"rgba(138,148,168,0.4)",
+    "grid":      "rgba(10,36,99,0.08)",
     "bg":        "#ffffff",
-    "font":      "#1a1a1a",
-    "vline":     "rgba(0,0,0,0.18)",
+    "font":      "#1a1a2e",
+    "vline":     "rgba(10,36,99,0.18)",
 }
 
 
