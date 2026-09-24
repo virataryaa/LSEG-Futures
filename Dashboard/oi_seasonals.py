@@ -42,17 +42,18 @@ except ImportError:
 # (target >= 8), worst normal-vision deltaE 19.6 (floor >= 15). Three of them sit
 # under 3:1 contrast on white, which is why the data table below is not
 # optional — it is the relief view for those.
-CURRENT_COLOR = "#E8470A"
-YEAR_COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#e87ba4",
-               "#008300", "#4a3aa7", "#e34948"]
+CURRENT_COLOR = "#0a2463"   # navy, matches the Cotton dashboard
+YEAR_COLORS = ["#e8770a", "#1f8a9c", "#c94a4a", "#c98a1f",
+               "#1f9d6f", "#7a4fb0", "#8a94a8"]   # warm/teal complements to navy
 MAX_COMPARE = len(YEAR_COLORS)
 DEFAULT_PLOT = 4        # comparison lines drawn on opening (most recent, incl. any
                          # not-yet-started deferred season); more can be added, up to MAX_COMPARE
 
-MEAN_COLOR = "#1a1a2e"          # neutral reference line, not a series hue
-BAND_INNER = "rgba(99,149,237,0.28)"
-BAND_OUTER = "rgba(99,149,237,0.10)"
-NAV_ACCENT = C["oi_avg"]
+MEAN_COLOR = "#4a5578"          # neutral reference line, not a series hue
+BAND_INNER = "rgba(31,138,156,0.28)"    # 25th-75th pct (Cotton teal)
+BAND_MID   = "rgba(31,138,156,0.16)"    # 10th-90th pct
+BAND_OUTER = "rgba(31,138,156,0.08)"    # min-max
+NAV_ACCENT = "#0a2463"
 
 # Each market family lists the combined basket first, then its New York leg,
 # then its London leg, so the single legs can be read on their own. Cocoa is
@@ -222,21 +223,27 @@ section[data-testid="stSidebar"] h3 {{ font-size:0.82rem; font-weight:600;
 .kpichip:last-child{{border-right:none}}
 .kpil{{color:#9ca3af;font-size:.62rem;text-transform:uppercase;letter-spacing:.03em;margin-right:4px}}
 .kpiv{{font-weight:700;color:#1a1a1a}}
-/* Same underline tab strip as the OI Progression page's view row. */
-.st-key-nav_view {{ margin-top:-.35rem; border-bottom:1px solid #e3e7ee; gap:0; }}
-.st-key-nav_view [data-testid="stButtonGroup"] > div {{ gap:2px; flex-wrap:wrap; }}
+/* Pill tab strip, same look as the Cotton dashboard */
+.st-key-nav_view [data-testid="stButtonGroup"] > div {{
+  display:inline-flex; gap:4px; padding:4px; background:#eef0f6; border:none; border-radius:999px; flex-wrap:wrap; }}
 .st-key-nav_view button[kind^="segmented_control"] {{
-  border:none !important; border-radius:6px 6px 0 0 !important; margin:0 0 -1px 0 !important;
-  padding:.45rem .9rem !important; min-height:0 !important;
-  background:transparent !important; box-shadow:none !important;
-  border-bottom:2px solid transparent !important;
-  transition:color .15s ease, border-color .15s ease, background .15s ease; }}
+  border:none !important; border-radius:999px !important; margin:0 !important;
+  padding:.35rem 1.1rem !important; min-height:0 !important;
+  background:transparent !important; box-shadow:none !important; }}
 .st-key-nav_view button[kind^="segmented_control"] p {{
-  font-size:.81rem !important; font-weight:500 !important; color:#6b7280 !important; }}
-.st-key-nav_view button[kind="segmented_control"]:hover {{ background:#f5f6f9 !important; }}
-.st-key-nav_view button[kind="segmented_control"]:hover p {{ color:#1f2937 !important; }}
-.st-key-nav_view button[kind="segmented_controlActive"] {{ border-bottom:2px solid {NAV_ACCENT} !important; }}
-.st-key-nav_view button[kind="segmented_controlActive"] p {{ color:{NAV_ACCENT} !important; font-weight:600 !important; }}
+  font-size:.84rem !important; font-weight:600 !important; color:#5a6688 !important; }}
+.st-key-nav_view button[kind="segmented_control"]:hover {{ background:#e2e6f0 !important; }}
+.st-key-nav_view button[kind="segmented_controlActive"] {{ background:{NAV_ACCENT} !important; }}
+.st-key-nav_view button[kind="segmented_controlActive"] p {{ color:#ffffff !important; }}
+h1, h2, h3, h4, h5, h6 {{ color:#0a2463 !important; }}
+div[role="radiogroup"] {{ background:#eef0f6; padding:4px; border-radius:999px; gap:2px; display:inline-flex; flex-wrap:wrap; }}
+div[role="radiogroup"] label {{ background:transparent !important; border-radius:999px !important; padding:4px 12px !important; margin:0 !important; }}
+div[role="radiogroup"] label[data-baseweb="radio"] > div:first-child {{ display:none; }}
+div[role="radiogroup"] label div[data-testid="stMarkdownContainer"] p {{ font-size:12px !important; color:#5a6688 !important; }}
+div[role="radiogroup"] label:has(input:checked) {{ background:#0a2463 !important; }}
+div[role="radiogroup"] label:has(input:checked) div[data-testid="stMarkdownContainer"] p {{ color:#ffffff !important; font-weight:600; }}
+.sb-title {{ font-family:'Fraunces', Georgia, serif; font-size:1.5rem; font-weight:600; color:#0a2463 !important; margin-bottom:2px; }}
+.sb-caption {{ font-size:11px; color:#7a86a8 !important; margin-bottom:16px; line-height:1.4; }}
 </style>""", unsafe_allow_html=True)
 
 
@@ -271,11 +278,11 @@ if st.session_state.get("seas_preset") not in (None, *PRESETS):
 # nav) between the 9 ready-made baskets and building one from scratch --
 # a checkbox read the same either way but didn't look or feel like a real
 # choice between two modes the way two tabs do.
-_BASKET_ACCENT = "#2a78d6"
+_BASKET_ACCENT = "#0a2463"
 st.markdown(f"""<style>
   .st-key-nav_basket [data-testid="stButtonGroup"] > div {{
-    display:inline-flex; gap:4px; padding:4px; background:#f1f3f7;
-    border:1px solid #e3e7ee; border-radius:999px;
+    display:inline-flex; gap:4px; padding:4px; background:#eef0f6;
+    border:none; border-radius:999px;
   }}
   .st-key-nav_basket button[kind^="segmented_control"] {{
     border:none !important; border-radius:999px !important; margin:0 !important;
@@ -458,6 +465,7 @@ bsig = "_".join(
 dte_top = max(int(np.ceil(max(float(s.index.max()) for s in built.values()) / 25.0)) * 25, 225)
 
 with st.sidebar:
+    st.markdown("<div class='sb-title'>OI Seasonals</div><div class='sb-caption'>Open interest by days to expiry against history, with percentile bands.</div>", unsafe_allow_html=True)
     st.markdown("### Years")
     # The most recent built years, current excluded (it's always drawn on its
     # own) -- not narrowed to `complete`, so a deferred season already listed
@@ -499,6 +507,8 @@ band = pd.DataFrame({
     "mean": avg_src.mean(axis=1, skipna=True),
     "p25":  avg_src.quantile(0.25, axis=1),
     "p75":  avg_src.quantile(0.75, axis=1),
+    "p10":  avg_src.quantile(0.10, axis=1),
+    "p90":  avg_src.quantile(0.90, axis=1),
     "lo":   avg_src.min(axis=1, skipna=True),
     "hi":   avg_src.max(axis=1, skipna=True),
 }, index=grid)
@@ -556,6 +566,12 @@ if view == "Chart":
         fig.add_trace(go.Scatter(x=band.index, y=band["lo"], mode="lines", name="Min-Max",
                                  line=dict(width=0), fill="tonexty", fillcolor=BAND_OUTER,
                                  hoverinfo="skip"))
+        fig.add_trace(go.Scatter(x=band.index, y=band["p90"], mode="lines",
+                                 name="10th-90th Pct", line=dict(width=0),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=band.index, y=band["p10"], mode="lines",
+                                 name="10th-90th Pct", line=dict(width=0), fill="tonexty",
+                                 fillcolor=BAND_MID, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=band.index, y=band["p75"], mode="lines",
                                  name="25th-75th Pct", line=dict(width=0),
                                  hoverinfo="skip", showlegend=False))
@@ -565,7 +581,7 @@ if view == "Chart":
     if avg_years:
         fig.add_trace(go.Scatter(
             x=band.index, y=band["mean"], mode="lines", name=f"{n_avg}Y Mean",
-            line=dict(color=MEAN_COLOR, width=2.5, dash="dash"),
+            line=dict(color=MEAN_COLOR, width=1.5, dash="dot"),
             hovertemplate="%{y:,.0f}<extra>Mean</extra>"))
 
     # Every year stops when its front leg expires, so nothing is drawn below
