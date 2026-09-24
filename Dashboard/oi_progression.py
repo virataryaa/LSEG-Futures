@@ -762,21 +762,77 @@ def _syms_on(data: dict, snapshot_date) -> list:
     return [s for s in data["all_syms"] if row.get(s, False)]
 
 
-def build_spot_summary_html(data: dict) -> str:
+# Fixed widths for the non-contract columns, shared by "Change wrt COT date" and the
+# Daily Grid so the two tables line up column-for-column.
+_GRID_COL_CSS = (
+    ".c-tot{min-width:66px}.c-px{min-width:92px}.c-pxchg{min-width:44px}.c-oichg{min-width:52px}"
+    ".c-spot{min-width:60px}.c-nonspot{min-width:66px}.c-date2{min-width:66px}"
+    ".c-spread{min-width:62px}.c-avg{min-width:72px}"
+)
+
+
+def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str, leg2: str):
+    """Everything the Daily Grid and the Change-wrt-COT table both need, derived once
+    so the two always show the same columns, price basis and spread."""
+    oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
+    if oi_piv.empty:
+        return None
+    if price_source != "Spot (Most OI)" and price_source in px_piv.columns:
+        # A fixed, single contract's price throughout — unlike Spot, this
+        # doesn't switch contracts as OI leadership rolls from one month
+        # to the next, useful for tracking one specific expiry's own price.
+        spot_price = px_piv[price_source]
+        price_chg_pct = spot_price.pct_change(fill_method=None) * 100
+    else:
+        spot_price = data["spot_price"]; price_chg_pct = data["price_chg_pct"]
+    max_date = oi_piv.index.max()
+    cutoff = max_date - pd.Timedelta(days=table_lookback)
+    has_oi = oi_piv.notna().any(axis=1)
+    dates = [d for d in oi_piv.index if d >= cutoff and has_oi.at[d]]
+    if not dates:
+        return None
+    # Only currently-live (unexpired) contract months as columns — a month
+    # that has since expired mid-window still counts in Total/OI Chg (those
+    # come from the full oi_piv regardless of which columns are shown), it
+    # just no longer gets its own column.
+    syms = [s for s in _syms_in_window(data, dates) if s in data["syms"]]
+    have_spread = leg1 != leg2 and leg1 in px_piv.columns and leg2 in px_piv.columns
+    spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
+    spread_label = f"{leg1}-{_leg_suffix(leg2)}" if have_spread else "Spread"
+    if price_source == "Spot (Most OI)":
+        latest_spot = data["spot_sym"].iloc[-1] if len(data["spot_sym"]) else None
+        price_label = f"Price (Spot: {latest_spot})" if latest_spot else "Price (Spot)"
+    else:
+        price_label = f"Price ({price_source})"
+    oi_chg = data["oi_chg"]
+    return dict(
+        oi_piv=oi_piv, px_piv=px_piv, total_oi=data["total_oi"], oi_chg=oi_chg,
+        spot_oi_chg=data["spot_oi_chg"], oi_chg_5d=oi_chg.rolling(5).mean(),
+        spot_price=spot_price, price_chg_pct=price_chg_pct,
+        dates=dates, dates_desc=sorted(dates, reverse=True), syms=syms,
+        have_spread=have_spread, spread=spread, spread_label=spread_label, price_label=price_label,
+    )
+
+
+def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: str,
+                            price_source: str = "Spot (Most OI)") -> str:
     """LAST (today's raw OI) + the day-over-day and since-last-COT deltas,
     then the last two COT Tuesdays (the session itself, not the Friday
     report) with their own week-over-week deltas. This table only tracks
     OI on Tuesday sessions — it doesn't read the published COT report — so
     the most recent Tuesday with OI data is used as soon as it's in, with
     no wait for Friday's release."""
-    oi_piv = data["oi_piv"]; total_oi = data["total_oi"]; spot_price = data["spot_price"]
-    dates = list(oi_piv.index[oi_piv.notna().any(axis=1)])
-    if not dates:
+    ctx = _grid_context(data, table_lookback, price_source, leg1, leg2)
+    if ctx is None:
         return "<p>No data.</p>"
+    oi_piv = ctx["oi_piv"]; total_oi = ctx["total_oi"]; spot_price = ctx["spot_price"]
+    price_chg_pct = ctx["price_chg_pct"]; oi_chg = ctx["oi_chg"]; spot_oi_chg = ctx["spot_oi_chg"]
+    oi_chg_5d = ctx["oi_chg_5d"]; spread = ctx["spread"]; have_spread = ctx["have_spread"]
+    # Same columns as the Daily Grid (same window, same live-contract rule).
+    syms = ctx["syms"]
+    dates = list(oi_piv.index[oi_piv.notna().any(axis=1)])
     max_date = dates[-1]
     prev_day = dates[-2] if len(dates) >= 2 else None
-    # Columns: months carrying OI over the span this table actually quotes.
-    syms = _syms_in_window(data, dates[-30:])
     tuesdays = [d for d in dates if pd.Timestamp(d).weekday() == 1]
     last_cot  = tuesdays[-1] if len(tuesdays) >= 1 else None
     prev_cot  = tuesdays[-2] if len(tuesdays) >= 2 else None
@@ -786,52 +842,90 @@ def build_spot_summary_html(data: dict) -> str:
         return oi_piv.loc[d] if d is not None else pd.Series(index=syms, dtype=float)
 
     def px(d):
-        return spot_price.loc[d] if d is not None else np.nan
+        return spot_price.get(d, np.nan) if d is not None else np.nan
 
-    def px_chg_pct(d1, d0):
-        p1, p0 = px(d1), px(d0)
-        return (p1 - p0) / p0 * 100 if (d1 is not None and d0 is not None and p0) else np.nan
+    def spr(d):
+        return spread.get(d, np.nan) if (d is not None and have_spread) else np.nan
 
-    css = """<style>
-      .spotsum-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}
-      table.spotsum{border-collapse:collapse;width:auto;font-size:.66rem;font-family:'Inter',sans-serif;white-space:nowrap}
-      table.spotsum th,table.spotsum td{padding:1px 8px;text-align:center;border-bottom:1px solid #f4f4f5}
-      table.spotsum th{position:sticky;top:0;background:#0a2463;color:#fff;font-weight:600;
-        font-size:.6rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}
-      table.spotsum td.lbl{text-align:left;font-weight:600;color:#1d1d1f;padding-left:10px}
-      table.spotsum tr.delta td.lbl{font-weight:400;color:#9ca3af;font-size:.62rem}
-      table.spotsum tr.spacer td{padding:2px 0;border:none}
-      table.spotsum td.tot{font-weight:700;background:#fafafa}
-      table.spotsum tr.tue-row{background:#eceef1}
-      table.spotsum tbody tr:hover td{background-color:rgba(10,36,99,.04)}
+    def flow_sum(d1, d0, series):
+        """Sum of a daily-change series over the sessions after d0 up to and including d1."""
+        idx = series.index
+        return series.loc[(idx > d0) & (idx <= d1)].sum()
+
+    css = f"""<style>
+      .spotsum-wrap{{overflow-x:auto;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px}}
+      table.spotsum{{border-collapse:collapse;width:auto;font-size:.6rem;font-family:'Inter',sans-serif;white-space:nowrap}}
+      table.spotsum th,table.spotsum td{{padding:1px 4px;text-align:center;border-bottom:1px solid #f4f4f5}}
+      table.spotsum th{{background:#0a2463;color:#fff;font-weight:600;
+        font-size:.54rem;text-transform:uppercase;letter-spacing:.02em;border-bottom:2px solid #0a2463}}
+      table.spotsum td.lbl,table.spotsum th.lbl{{text-align:left;font-weight:600;color:#1d1d1f;min-width:{_DATECOL_W}px;padding-left:6px}}
+      table.spotsum th.lbl{{color:#fff}}
+      table.spotsum tr.delta td.lbl{{font-weight:400;color:#9ca3af}}
+      table.spotsum tr.spacer td{{padding:2px 0;border:none}}
+      table.spotsum .ccol{{min-width:{_CCOL_W}px}}
+      table.spotsum tr.tue-row{{background:#eceef1}}
+      table.spotsum tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
+      table.spotsum {_GRID_COL_CSS.replace('.c-', 'table.spotsum .c-').replace('}.', '}table.spotsum .')}
     </style>"""
 
     def value_row(label, d):
         if d is None:
             return ""
+        d_str = pd.Timestamp(d).strftime("%d/%m/%Y")
         tr_cls = " class='tue-row'" if pd.Timestamp(d).weekday() == 1 else ""
         cells = "".join(f"<td class='ccol'>{_fmt_num(oi_row(d).get(s))}</td>" for s in syms)
-        px_txt = f"{px(d):.2f}" if pd.notna(px(d)) else ""
-        return (f"<tr{tr_cls}><td class='lbl'>{label}</td>{cells}"
-                f"<td class='tot'>{_fmt_num(total_oi.get(d))}</td><td>{px_txt}</td></tr>")
+        px_v = px(d); spread_v = spr(d)
+        non_spot = (oi_chg.get(d) - spot_oi_chg.get(d)
+                    if pd.notna(oi_chg.get(d)) and pd.notna(spot_oi_chg.get(d)) else np.nan)
+        cells += (
+            f"<td class='c-tot'>{_fmt_num(total_oi.get(d))}</td>"
+            f"<td class='c-px'>{f'{px_v:.2f}' if pd.notna(px_v) else ''}</td>"
+            f"<td class='c-pxchg'>{_fmt_pct(price_chg_pct.get(d))}</td>"
+            f"<td class='c-oichg'>{_fmt_num(oi_chg.get(d), True)}</td>"
+            f"<td class='c-spot'>{_fmt_num(spot_oi_chg.get(d), True)}</td>"
+            f"<td class='c-nonspot'>{_fmt_num(non_spot, True)}</td>"
+            f"<td class='c-date2' style='color:#9ca3af'>{d_str}</td>"
+            f"<td class='c-spread'>{f'{spread_v:+.2f}' if pd.notna(spread_v) else ''}</td>"
+            f"<td class='c-avg'>{_fmt_num(oi_chg_5d.get(d), True)}</td>"
+        )
+        return f"<tr{tr_cls}><td class='lbl'>{label}</td>{cells}</tr>"
 
     def delta_row(label, d1, d0):
+        """Same columns, computed over the d0 -> d1 window: level columns are the
+        change in level; daily-flow columns are the flow summed over the window."""
         if d1 is None or d0 is None:
             return ""
         delta = oi_row(d1) - oi_row(d0)
-        cells = "".join(
-            f"<td class='ccol'>{_fmt_num(delta.get(s), True)}</td>" for s in syms
-        )
+        cells = "".join(f"<td class='ccol'>{_fmt_num(delta.get(s), True)}</td>" for s in syms)
         tot_delta = total_oi.get(d1) - total_oi.get(d0)
-        px_pct = px_chg_pct(d1, d0)
-        return (
-            f"<tr class='delta'><td class='lbl'>{label}</td>{cells}"
-            f"<td class='tot'>{_fmt_num(tot_delta, True)}</td>"
-            f"<td>{_fmt_pct(px_pct)}</td></tr>"
+        p1, p0 = px(d1), px(d0)
+        px_abs = p1 - p0 if pd.notna(p1) and pd.notna(p0) else np.nan
+        px_pct = (p1 - p0) / p0 * 100 if pd.notna(p1) and pd.notna(p0) and p0 else np.nan
+        spot_flow = flow_sum(d1, d0, spot_oi_chg)
+        non_spot = tot_delta - spot_flow if pd.notna(tot_delta) and pd.notna(spot_flow) else np.nan
+        s1, s0 = spr(d1), spr(d0)
+        spread_d = s1 - s0 if pd.notna(s1) and pd.notna(s0) else np.nan
+        a1, a0 = oi_chg_5d.get(d1), oi_chg_5d.get(d0)
+        avg_d = a1 - a0 if pd.notna(a1) and pd.notna(a0) else np.nan
+        cells += (
+            f"<td class='c-tot'>{_fmt_num(tot_delta, True)}</td>"
+            f"<td class='c-px'>{f'{px_abs:+.2f}' if pd.notna(px_abs) else ''}</td>"
+            f"<td class='c-pxchg'>{_fmt_pct(px_pct)}</td>"
+            f"<td class='c-oichg'>{_fmt_num(tot_delta, True)}</td>"
+            f"<td class='c-spot'>{_fmt_num(spot_flow, True)}</td>"
+            f"<td class='c-nonspot'>{_fmt_num(non_spot, True)}</td>"
+            f"<td class='c-date2'></td>"
+            f"<td class='c-spread'>{f'{spread_d:+.2f}' if pd.notna(spread_d) else ''}</td>"
+            f"<td class='c-avg'>{_fmt_num(avg_d, True)}</td>"
         )
+        return f"<tr class='delta'><td class='lbl'>{label}</td>{cells}</tr>"
 
-    spacer = f"<tr class='spacer'><td colspan='{len(syms) + 3}'></td></tr>"
-    header = "<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) + "<th>Total Mkt OI</th><th>Price</th></tr>"
+    spacer = f"<tr class='spacer'><td colspan='{len(syms) + 10}'></td></tr>"
+    header = ("<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
+              f"<th class='c-tot'>Total Mkt OI</th><th class='c-px'>{ctx['price_label']}</th>"
+              "<th class='c-pxchg'>+/-</th><th class='c-oichg'>OI Chg</th><th class='c-spot'>Spot OI +/-</th>"
+              "<th class='c-nonspot'>Non Spot Chg</th><th class='c-date2'>Date</th>"
+              f"<th class='c-spread'>{ctx['spread_label']}</th><th class='c-avg'>OI Chg 5d Avg</th></tr>")
     body = (
         value_row(pd.Timestamp(max_date).strftime("%d/%m/%Y"), max_date)
         + delta_row("+/- day", max_date, prev_day)
@@ -843,7 +937,7 @@ def build_spot_summary_html(data: dict) -> str:
         + value_row(pd.Timestamp(prev_cot).strftime("%d/%m/%Y") if prev_cot else "", prev_cot)
         + delta_row("+/- week", prev_cot, prev_cot2)
     )
-    return f"{css}<div class='spotsum-wrap'><table class='spotsum'>{header}<tbody>{body}</tbody></table></div>"
+    return f"{css}<div class='spotsum-wrap'><table class='spotsum'><thead>{header}</thead><tbody>{body}</tbody></table></div>"
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
@@ -857,38 +951,15 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     that expired mid-window — so Total is the real board figure on every
     row and matches the Comprehensive Grid tab."""
     data = build_spot_oi_data(commodity, mtime)
-    oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
-    total_oi = data["total_oi"]
-    oi_chg = data["oi_chg"]; spot_oi_chg = data["spot_oi_chg"]
-    oi_chg_5d = oi_chg.rolling(5).mean()
-
-    if price_source != "Spot (Most OI)" and price_source in px_piv.columns:
-        # A fixed, single contract's price throughout — unlike Spot, this
-        # doesn't switch contracts as OI leadership rolls from one month
-        # to the next, useful for tracking one specific expiry's own price.
-        spot_price = px_piv[price_source]
-        price_chg_pct = spot_price.pct_change(fill_method=None) * 100
-    else:
-        spot_price = data["spot_price"]; price_chg_pct = data["price_chg_pct"]
-
-    if oi_piv.empty:
+    ctx = _grid_context(data, table_lookback, price_source, leg1, leg2)
+    if ctx is None:
         return None
-    max_date = oi_piv.index.max()
-    cutoff = max_date - pd.Timedelta(days=table_lookback)
-    has_oi = oi_piv.notna().any(axis=1)
-    dates = [d for d in oi_piv.index if d >= cutoff and has_oi.at[d]]
-    if not dates:
-        return None
-    dates_desc = sorted(dates, reverse=True)
-    # Only currently-live (unexpired) contract months as columns — a month
-    # that has since expired mid-window still counts in Total/OI Chg (those
-    # come from the full oi_piv regardless of which columns are shown), it
-    # just no longer gets its own column here.
-    syms = [s for s in _syms_in_window(data, dates) if s in data["syms"]]
-
-    have_spread = leg1 != leg2 and leg1 in px_piv.columns and leg2 in px_piv.columns
-    spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
-    spread_label = f"{leg1}-{_leg_suffix(leg2)}" if have_spread else "Spread"
+    oi_piv = ctx["oi_piv"]; px_piv = ctx["px_piv"]; total_oi = ctx["total_oi"]
+    oi_chg = ctx["oi_chg"]; spot_oi_chg = ctx["spot_oi_chg"]; oi_chg_5d = ctx["oi_chg_5d"]
+    spot_price = ctx["spot_price"]; price_chg_pct = ctx["price_chg_pct"]
+    dates = ctx["dates"]; dates_desc = ctx["dates_desc"]; syms = ctx["syms"]
+    have_spread = ctx["have_spread"]; spread = ctx["spread"]
+    spread_label = ctx["spread_label"]; price_label = ctx["price_label"]
 
     oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
     # Each bar column is scaled to its own largest move: price % and lot counts
@@ -907,21 +978,15 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         box-shadow:inset -1px 0 0 0 #e5e7eb;min-width:{_DATECOL_W}px}}
       table.spotgrid th.date-cell{{background:#0a2463;color:#fff;z-index:3}}
       table.spotgrid .ccol{{min-width:{_CCOL_W}px}}
-      table.spotgrid .tot-cell{{background:#fafafa;font-weight:700}}
-      table.spotgrid th.tot-cell{{background:#0a2463;color:#fff}}
+      table.spotgrid {_GRID_COL_CSS.replace('.c-', 'table.spotgrid .c-').replace('}.', '}table.spotgrid .')}
       table.spotgrid tr.tue-row{{background:#eceef1}}
       table.spotgrid tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
 
-    if price_source == "Spot (Most OI)":
-        latest_spot = data["spot_sym"].iloc[-1] if len(data["spot_sym"]) else None
-        price_label = f"Price (Spot: {latest_spot})" if latest_spot else "Price (Spot)"
-    else:
-        price_label = f"Price ({price_source})"
     header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
-              f"<th class='tot-cell'>Total Mkt OI</th><th>{price_label}</th><th>+/-</th>"
-              "<th>OI Chg</th><th>Spot OI +/-</th><th>Non Spot Chg</th><th>Date</th>"
-              f"<th>{spread_label}</th><th>OI Chg 5d Avg</th></tr>")
+              f"<th class='c-tot'>Total Mkt OI</th><th class='c-px'>{price_label}</th><th class='c-pxchg'>+/-</th>"
+              "<th class='c-oichg'>OI Chg</th><th class='c-spot'>Spot OI +/-</th><th class='c-nonspot'>Non Spot Chg</th>"
+              f"<th class='c-date2'>Date</th><th class='c-spread'>{spread_label}</th><th class='c-avg'>OI Chg 5d Avg</th></tr>")
 
     rows = []
     for d in dates_desc:
@@ -942,15 +1007,15 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         # in everything except the front month". Diffing a stitched Non-Spot
         # level instead would post a spurious jump on every roll day.
         non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
-        cells += f"<td class='tot-cell'>{_fmt_num(total_oi.get(d))}</td>"
-        cells += f"<td>{px_v:.2f}</td>" if pd.notna(px_v) else "<td></td>"
-        cells += f"<td style='{_oi_chg_style(px_pct_v, px_vmax)}'>{_fmt_pct(px_pct_v)}</td>"
-        cells += f"<td style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
-        cells += f"<td style='{_oi_chg_style(spot_chg_v, spot_vmax)}'>{_fmt_num(spot_chg_v, True)}</td>"
-        cells += f"<td style='{_oi_chg_style(non_spot_chg_v, nonspot_vmax)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
-        cells += f"<td style='color:#9ca3af'>{d_str}</td>"
-        cells += f"<td>{spread_v:+.2f}</td>" if pd.notna(spread_v) else "<td></td>"
-        cells += f"<td style='{_oi_chg_style(oichg5d_v, oi_chg_vmax)};color:{_sign_color(oichg5d_v)}'>{_fmt_num(oichg5d_v, True)}</td>"
+        cells += f"<td class='c-tot'>{_fmt_num(total_oi.get(d))}</td>"
+        cells += f"<td class='c-px'>{px_v:.2f}</td>" if pd.notna(px_v) else "<td class='c-px'></td>"
+        cells += f"<td class='c-pxchg' style='{_oi_chg_style(px_pct_v, px_vmax)}'>{_fmt_pct(px_pct_v)}</td>"
+        cells += f"<td class='c-oichg' style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
+        cells += f"<td class='c-spot' style='{_oi_chg_style(spot_chg_v, spot_vmax)}'>{_fmt_num(spot_chg_v, True)}</td>"
+        cells += f"<td class='c-nonspot' style='{_oi_chg_style(non_spot_chg_v, nonspot_vmax)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
+        cells += f"<td class='c-date2' style='color:#9ca3af'>{d_str}</td>"
+        cells += f"<td class='c-spread'>{spread_v:+.2f}</td>" if pd.notna(spread_v) else "<td class='c-spread'></td>"
+        cells += f"<td class='c-avg' style='{_oi_chg_style(oichg5d_v, oi_chg_vmax)};color:{_sign_color(oichg5d_v)}'>{_fmt_num(oichg5d_v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
     return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
@@ -2557,7 +2622,7 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
     # first, so it shouldn't be buried under a long scrolling table.
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:4px 0 4px'>"
                "Change wrt COT date</div>", unsafe_allow_html=True)
-    st.markdown(build_spot_summary_html(spot_data), unsafe_allow_html=True)
+    st.markdown(build_spot_summary_html(spot_data, spot_lookback, leg1, leg2, price_source), unsafe_allow_html=True)
 
     st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
                "Daily Grid</div>", unsafe_allow_html=True)
