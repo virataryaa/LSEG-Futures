@@ -1342,7 +1342,7 @@ def _stored(key, default, valid):
 
 
 with st.sidebar:
-    st.markdown("## Settings")
+    st.markdown("<style>.sb-title{font-family:'Fraunces',Georgia,serif;font-size:1.5rem;font-weight:600;color:#0a2463;margin-bottom:2px}.sb-caption{font-size:11px;color:#7a86a8;margin-bottom:16px;line-height:1.4}</style><div class='sb-title'>Futures Dashboard</div><div class='sb-caption'>Open interest, volume and progression by contract.</div>", unsafe_allow_html=True)
     st.markdown("---")
 
     commodity = st.selectbox("Commodity", list(COMMODITIES.keys()),
@@ -1455,11 +1455,11 @@ st.markdown("""
 # the rest. Grouped by metric at the top level, then by scope inside:
 # Progression is one contract against its own history on a days-to-expiry
 # axis, Board is every contract on a calendar axis.
-_NAV_ACCENT = C["oi_avg"]
+_NAV_ACCENT = "#0a2463"
 st.markdown(f"""<style>
   .st-key-nav_section [data-testid="stButtonGroup"] > div {{
-    display:inline-flex; gap:4px; padding:4px; background:#f1f3f7;
-    border:1px solid #e3e7ee; border-radius:999px;
+    display:inline-flex; gap:4px; padding:4px; background:#eef0f6;
+    border:none; border-radius:999px;
   }}
   .st-key-nav_section button[kind^="segmented_control"] {{
     border:none !important; border-radius:999px !important; margin:0 !important;
