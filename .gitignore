@@ -9,3 +9,6 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Password gate secret - never commit the real password
+.streamlit/secrets.toml

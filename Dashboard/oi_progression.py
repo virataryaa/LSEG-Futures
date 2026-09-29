@@ -11,6 +11,35 @@ from datetime import date
 
 st.set_page_config(page_title="Futures Dashboard", page_icon="📈", layout="wide")
 
+
+# ---------------------------------------------------------------------------------------------
+# Password gate. Password lives in .streamlit/secrets.toml locally, and in this app's own
+# "Secrets" box on Streamlit Cloud (Settings > Secrets) - never committed, never hardcoded.
+# ---------------------------------------------------------------------------------------------
+def _check_password() -> bool:
+    if st.session_state.get("_authed"):
+        return True
+    st.markdown(
+        "<div style='max-width:340px;margin:120px auto 0;text-align:center'>"
+        "<div style='font-size:22px;font-weight:700;color:#0a2463;margin-bottom:18px'>Futures Dashboard</div>"
+        "</div>", unsafe_allow_html=True)
+    _l, _c, _r = st.columns([1, 1, 1])
+    with _c:
+        pw = st.text_input("Password", type="password", label_visibility="collapsed",
+                           placeholder="Password", key="_pw_input")
+        if pw:
+            real = st.secrets.get("auth", {}).get("password")
+            if real and pw == real:
+                st.session_state["_authed"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    return False
+
+
+if not _check_password():
+    st.stop()
+
 try:
     from common import (DB_PATH, COMMODITIES, MONTH_NAMES, MONTH_ORDER, C,
                         _mtime, _total_oi_mtime, _rollex_mtime, load_data, load_enriched, load_total_oi,
