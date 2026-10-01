@@ -26,25 +26,53 @@ st.set_page_config(page_title="Deferred OI Seasonals", page_icon="📈",
 # ---------------------------------------------------------------------------------------------
 # Password gate. Password lives in .streamlit/secrets.toml locally, and in this app's own
 # "Secrets" box on Streamlit Cloud (Settings > Secrets) - never committed, never hardcoded.
+# A correct login is remembered for 24h in a signed browser cookie (see _check_password).
 # ---------------------------------------------------------------------------------------------
 def _check_password() -> bool:
     if st.session_state.get("_authed"):
         return True
-    st.markdown(
-        "<div style='max-width:340px;margin:120px auto 0;text-align:center'>"
-        "<div style='font-size:22px;font-weight:700;color:#0a2463;margin-bottom:18px'>Deferred OI Seasonals</div>"
-        "</div>", unsafe_allow_html=True)
-    _l, _c, _r = st.columns([1, 1, 1])
-    with _c:
-        pw = st.text_input("Password", type="password", label_visibility="collapsed",
-                           placeholder="Password", key="_pw_input")
-        if pw:
-            real = st.secrets.get("auth", {}).get("password")
-            if real and pw == real:
-                st.session_state["_authed"] = True
-                st.rerun()
-            else:
+    import hashlib, hmac, time
+    real = None
+    try:
+        real = st.secrets.get("auth", {}).get("password")
+    except Exception:
+        pass
+
+    def _sig(exp):
+        return hmac.new(real.encode(), f"v1|{exp}".encode(), hashlib.sha256).hexdigest()
+
+    try:
+        exp, _, sig = st.context.cookies.get("_dm_auth", "").partition(".")
+        if real and exp.isdigit() and int(exp) > time.time() and hmac.compare_digest(sig, _sig(exp)):
+            st.session_state["_authed"] = True
+            return True
+    except Exception:
+        pass
+    box = st.empty()
+    with box.container():
+        st.markdown(
+            "<div style='max-width:340px;margin:120px auto 0;text-align:center'>"
+            "<div style='font-size:22px;font-weight:700;color:#0a2463;margin-bottom:18px'>Deferred OI Seasonals</div>"
+            "</div>", unsafe_allow_html=True)
+        _l, _c, _r = st.columns([1, 1, 1])
+        with _c:
+            pw = st.text_input("Password", type="password", label_visibility="collapsed",
+                               placeholder="Password", key="_pw_input")
+            if pw and not (real and pw == real):
                 st.error("Incorrect password.")
+    if pw and real and pw == real:
+        st.session_state["_authed"] = True
+        box.empty()
+        exp = int(time.time()) + 86400
+        try:
+            import streamlit.components.v1 as components
+            components.html(
+                "<script>var s=parent.location.protocol==='https:'?'; Secure':'';"
+                f"parent.document.cookie='_dm_auth={exp}.{_sig(exp)}; max-age=86400; path=/; SameSite=Lax'+s;</script>",
+                height=0)
+        except Exception:
+            pass
+        return True
     return False
 
 
