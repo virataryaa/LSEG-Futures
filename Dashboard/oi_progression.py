@@ -15,8 +15,34 @@ st.set_page_config(page_title="Futures Dashboard", page_icon="📈", layout="wid
 # ---------------------------------------------------------------------------------------------
 # Password gate. Password lives in .streamlit/secrets.toml locally, and in this app's own
 # "Secrets" box on Streamlit Cloud (Settings > Secrets) - never committed, never hardcoded.
-# A correct login is remembered for 24h in a signed browser cookie (see _check_password).
+# A correct login is remembered for 24h in the browser's localStorage (see _check_password).
 # ---------------------------------------------------------------------------------------------
+@st.cache_resource
+def _dm_login_bridge():
+    """Invisible component that keeps the signed 24h login token in the browser's localStorage and hands it
+    back to Python. Works through any proxy: it only uses the normal browser <-> app connection."""
+    import tempfile
+    from pathlib import Path
+    import streamlit.components.v1 as components
+    page = """<!doctype html><html><body><script>
+var KEY = "_dm_auth", last = null;
+function post(m) { m.isStreamlitMessage = true; window.parent.postMessage(m, "*"); }
+window.addEventListener("message", function (ev) {
+  if (!ev.data || ev.data.type !== "streamlit:render") return;
+  var a = ev.data.args || {};
+  try { if (a.write) localStorage.setItem(KEY, a.write); } catch (e) {}
+  var v = ""; try { v = localStorage.getItem(KEY) || ""; } catch (e) {}
+  if (v !== last) { last = v; post({type: "streamlit:setComponentValue", value: v, dataType: "json"}); }
+});
+post({type: "streamlit:componentReady", apiVersion: 1});
+post({type: "streamlit:setFrameHeight", height: 0});
+</script></body></html>"""
+    d = Path(tempfile.gettempdir()) / "dm_auth_bridge"
+    d.mkdir(exist_ok=True)
+    (d / "index.html").write_text(page, encoding="utf-8")
+    return components.declare_component("dm_auth_bridge", path=str(d))
+
+
 def _check_password() -> bool:
     if st.session_state.get("_authed"):
         return True
@@ -26,42 +52,40 @@ def _check_password() -> bool:
         real = st.secrets.get("auth", {}).get("password")
     except Exception:
         pass
+    typed = st.session_state.get("_pw_input") or ""
+    ok = bool(real) and typed == real
 
     def _sig(exp):
         return hmac.new(real.encode(), f"v1|{exp}".encode(), hashlib.sha256).hexdigest()
 
+    # A correct login is remembered for 24h as a signed token (HMAC of the expiry, keyed on the password
+    # itself - changing the password logs everyone out) in the browser's localStorage. The invisible
+    # component below reads it back on every visit, so refresh / new tab / reconnect don't ask again.
+    exp = int(time.time()) + 86400
+    stored = None
     try:
-        exp, _, sig = st.context.cookies.get("_dm_auth", "").partition(".")
-        if real and exp.isdigit() and int(exp) > time.time() and hmac.compare_digest(sig, _sig(exp)):
-            st.session_state["_authed"] = True
-            return True
+        stored = _dm_login_bridge()(write=(f"{exp}.{_sig(exp)}" if ok else None), key="_dm_login_bridge", default=None)
     except Exception:
         pass
-    box = st.empty()
-    with box.container():
-        st.markdown(
-            "<div style='max-width:340px;margin:120px auto 0;text-align:center'>"
-            "<div style='font-size:22px;font-weight:700;color:#0a2463;margin-bottom:18px'>Futures Dashboard</div>"
-            "</div>", unsafe_allow_html=True)
-        _l, _c, _r = st.columns([1, 1, 1])
-        with _c:
-            pw = st.text_input("Password", type="password", label_visibility="collapsed",
-                               placeholder="Password", key="_pw_input")
-            if pw and not (real and pw == real):
-                st.error("Incorrect password.")
-    if pw and real and pw == real:
+    try:
+        e, _, s = (stored or "").partition(".")
+        if real and e.isdigit() and int(e) > time.time() and hmac.compare_digest(s, _sig(e)):
+            ok = True
+    except Exception:
+        pass
+    if ok:
         st.session_state["_authed"] = True
-        box.empty()
-        exp = int(time.time()) + 86400
-        try:
-            import streamlit.components.v1 as components
-            components.html(
-                "<script>var s=parent.location.protocol==='https:'?'; Secure':'';"
-                f"parent.document.cookie='_dm_auth={exp}.{_sig(exp)}; max-age=86400; path=/; SameSite=Lax'+s;</script>",
-                height=0)
-        except Exception:
-            pass
         return True
+    st.markdown(
+        "<div style='max-width:340px;margin:120px auto 0;text-align:center'>"
+        "<div style='font-size:22px;font-weight:700;color:#0a2463;margin-bottom:18px'>Futures Dashboard</div>"
+        "</div>", unsafe_allow_html=True)
+    _l, _c, _r = st.columns([1, 1, 1])
+    with _c:
+        st.text_input("Password", type="password", label_visibility="collapsed",
+                      placeholder="Password", key="_pw_input")
+        if typed:
+            st.error("Incorrect password.")
     return False
 
 
