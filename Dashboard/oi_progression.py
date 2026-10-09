@@ -410,27 +410,28 @@ def compute_band(commodity, month, hist_year_range, metric_col,
     return band, active_syms, hist_syms
 
 
-def _dte_axis_style(ltd, dte_range, n_target=10):
-    """Shared x-axis look for the DTE charts: ticks on the 1st of each month
-    of the contract's life, labelled DTE (bold) over a small grey 'Mon 'yy'
-    (date = LTD - DTE; DTE is calendar days), thin axis line, short outside
-    tick marks and faint vertical gridlines. Without an LTD it keeps the
-    styling and leaves Plotly's plain DTE ticks."""
+def _dte_axis_style(ltd, dte_range, n_target=20):
+    """Shared x-axis look for the DTE charts: ticks on the 1st and 15th of
+    each month of the contract's life, labelled DTE (bold) over a small grey
+    'dd Mon' (date = LTD - DTE; DTE is calendar days), thin axis line, short
+    outside tick marks and faint vertical gridlines. Without an LTD it keeps
+    the styling and leaves Plotly's plain DTE ticks."""
     style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
-                 ticks="outside", ticklen=4, tickcolor="rgba(10,36,99,0.25)",
+                 ticks="outside", ticklen=3, tickcolor="rgba(10,36,99,0.25)",
                  showgrid=True, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
-                 title=None, tickfont=dict(size=11, color=C["font"]))
+                 title=None, tickfont=dict(size=9, color=C["font"]))
     if ltd is None or pd.isna(ltd):
         return style
     ltd = pd.Timestamp(ltd).normalize()
     lo, hi = sorted((int(dte_range[0]), int(dte_range[1])))
-    months = pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS")
-    months = [m for m in months if lo <= (ltd - m).days <= hi]
-    k = max(1, -(-len(months) // n_target))      # every k-th month so it never crowds
-    months = months[::-1][::k]                   # anchor on the month nearest expiry
-    vals = [(ltd - m).days for m in months]
-    text = [f"<b>{v}</b><br><span style='font-size:9px;color:#9ca3af'>{m:%b '%y}</span>"
-            for v, m in zip(vals, months)]
+    starts = pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS")
+    days = sorted(list(starts) + [m + pd.Timedelta(days=14) for m in starts])
+    days = [d for d in days if lo <= (ltd - d).days <= hi]
+    k = max(1, -(-len(days) // n_target))        # every k-th tick so it never crowds
+    days = days[::-1][::k]                       # anchor on the tick nearest expiry
+    vals = [(ltd - d).days for d in days]
+    text = [f"<b>{v}</b><br><span style='font-size:8px;color:#9ca3af'>{d:%d %b}</span>"
+            for v, d in zip(vals, days)]
     return dict(style, tickmode="array", tickvals=vals, ticktext=text)
 
 
@@ -1806,8 +1807,8 @@ def _view_oi():
     for i in range(1,5):
         c_i = quad_results[i-1][3] if i <= len(quad_results) else None
         ltd_i = c_i["LTD"].iloc[0] if c_i is not None and not c_i.empty else None
-        ax_i = _dte_axis_style(ltd_i, dte_range, n_target=6)
-        ax_i["tickfont"] = dict(size=10, color=C["font"])
+        ax_i = _dte_axis_style(ltd_i, dte_range, n_target=12)
+        ax_i["tickfont"] = dict(size=8, color=C["font"])
         fig4.update_xaxes(range=[dte_range[0], dte_range[1]], **ax_i,
                           row=(i-1)//2+1, col=(i-1)%2+1)
         fig4.update_yaxes(showgrid=True, gridcolor=C["grid"], tickformat=",",
