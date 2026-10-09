@@ -500,8 +500,8 @@ def build_chart(band, curr_df, metric_col, current_sym,
         lat_dte = int(latest["days_to_expiry"])
         lat_dt  = latest["Date"].strftime("%b %d, %Y")
         fig.add_trace(go.Scatter(x=[lat_dte], y=[lat_val],
-            mode="markers+text", text=[f"<b>{lat_val:{y_fmt}}{y_suffix}</b>"],
-            textposition="top right", textfont=dict(size=11, color=C["current"]),
+            mode="markers+text", text=[f"<b>{lat_val:{y_fmt}}{y_suffix}</b><br><span style='font-size:8px;color:#9ca3af'>{latest['Date']:%d %b}</span>"],
+            textposition="top right", textfont=dict(size=9, color=C["current"]),
             marker=dict(color=C["current"], size=8, line=dict(color="white", width=1.5)),
             showlegend=False,
             hovertemplate=f"<b>{lat_dt}</b><br>DTE: {lat_dte}<br>{lat_val:{y_fmt}}{y_suffix}<extra></extra>"))
@@ -581,8 +581,8 @@ def add_oi_traces(fig, band, curr_df, current_sym, oi_fmt,
         hovertemplate=f"<b>{current_sym}</b><br>DTE:%{{x}}<br>OI:%{{y:{oi_fmt}}}<extra></extra>"), **kw)
     latest = curr_df.iloc[-1]
     fig.add_trace(go.Scatter(x=[int(latest["days_to_expiry"])], y=[latest["open_interest"]],
-        mode="markers+text", text=[f"<b>{latest['open_interest']:{oi_fmt}}</b>"],
-        textposition="top right", textfont=dict(size=10, color=C["current"]),
+        mode="markers+text", text=[f"<b>{latest['open_interest']:{oi_fmt}}</b><br><span style='font-size:7px;color:#9ca3af'>{latest['Date']:%d %b}</span>"],
+        textposition="top right", textfont=dict(size=8, color=C["current"]),
         marker=dict(color=C["current"], size=7, line=dict(color="white", width=1.5)),
         showlegend=False,
         hovertemplate=f"<b>{latest['Date'].strftime('%b %d, %Y')}</b><br>OI:{latest['open_interest']:{oi_fmt}}<extra></extra>"), **kw)
