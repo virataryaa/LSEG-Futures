@@ -618,6 +618,31 @@ basket_txt = ", ".join(f"{k} {'+'.join(x if isinstance(x, str) else x[0] for x i
 st.markdown(f"### {basket_txt} <span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {meta[current]['last_date']:%d %b %Y}</span>", unsafe_allow_html=True)
 
 
+def _dte_axis_style(ltd, dte_range, n_target=20):
+    """Same x-axis look as oi_progression's DTE charts: ticks on the 1st and 15th of
+    each month of the contract's life, labelled DTE (grey) over a small bold black
+    'dd Mon' (date = LTD - DTE; DTE is calendar days), thin axis line, short
+    outside tick marks and faint vertical gridlines. Without an LTD it keeps
+    the styling and leaves Plotly's plain DTE ticks."""
+    style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
+                 ticks="outside", ticklen=3, tickcolor="rgba(10,36,99,0.25)",
+                 showgrid=True, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
+                 title=None, tickfont=dict(size=9, color="#9ca3af"))
+    if ltd is None or pd.isna(ltd):
+        return style
+    ltd = pd.Timestamp(ltd).normalize()
+    lo, hi = sorted((int(dte_range[0]), int(dte_range[1])))
+    starts = pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS")
+    days = sorted(list(starts) + [m + pd.Timedelta(days=14) for m in starts])
+    days = [d for d in days if lo <= (ltd - d).days <= hi]
+    k = max(1, -(-len(days) // n_target))        # every k-th tick so it never crowds
+    days = days[::-1][::k]                       # anchor on the tick nearest expiry
+    vals = [(ltd - d).days for d in days]
+    text = [f"{v}<br><span style='font-size:8px;color:#000000'><b>{d:%d %b}</b></span>"
+            for v, d in zip(vals, days)]
+    return dict(style, tickmode="array", tickvals=vals, ticktext=text)
+
+
 def _pct(a, b):
     return f"{(a / b - 1) * 100:+.1f}%" if pd.notna(b) and b > 0 else None
 
@@ -716,17 +741,20 @@ if view == "Chart":
                                  marker=dict(color=CURRENT_COLOR, size=9,
                                              line=dict(color="white", width=1.5)),
                                  showlegend=False, hoverinfo="skip"))
-        fig.add_annotation(x=cur_dte, y=cur_oi, text=f" {current}", showarrow=False,
-                           xanchor="left",
-                           font=dict(color=CURRENT_COLOR, size=11, family="Inter, sans-serif"))
+        fig.add_annotation(x=cur_dte, y=cur_oi, showarrow=False,
+                           xanchor="left", yanchor="bottom", yshift=4,
+                           text=(f" <b>{current}  {cur_oi:,.0f}</b><br>"
+                                 f" <span style='font-size:8px;color:#334155'>{meta[current]['last_date']:%d %b}</span>"),
+                           align="left",
+                           font=dict(color=CURRENT_COLOR, size=9, family="Inter, sans-serif",
+                                     shadow="0 0 2px #fff, 0 0 3px #fff"))
 
     fig.update_layout(
         height=620, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
         font=dict(color=C["font"], family="Inter, sans-serif"),
         margin=dict(l=70, r=60, t=20, b=70), hovermode="x unified",
-        xaxis=dict(title="Days to back-leg expiry", range=[max_dte, x_lo],
-                   showgrid=True, gridcolor=C["grid"], zeroline=False,
-                   tickfont=dict(size=11, color=C["font"])),
+        xaxis=dict(range=[max_dte, x_lo],
+                   **_dte_axis_style(meta[current]["back_ltd"], [max_dte, x_lo], n_target=24)),
         yaxis=dict(title=f"Open Interest ({unit_txt})", showgrid=True, gridcolor=C["grid"],
                    zeroline=False, tickformat=",", tickfont=dict(size=11, color=C["font"])),
         legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0,
