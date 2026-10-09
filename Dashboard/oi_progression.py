@@ -410,21 +410,28 @@ def compute_band(commodity, month, hist_year_range, metric_col,
     return band, active_syms, hist_syms
 
 
-def _dte_date_ticks(ltd, dte_range, n_target=8):
-    """Two-line x ticks: DTE on top, the selected contract's calendar date
-    (LTD - DTE; DTE is calendar days) underneath. Returns {} when there's no
-    LTD so the axis falls back to Plotly's plain DTE ticks."""
+def _dte_axis_style(ltd, dte_range, n_target=10):
+    """Shared x-axis look for the DTE charts: ticks on the 1st of each month
+    of the contract's life, labelled DTE (bold) over a small grey 'Mon 'yy'
+    (date = LTD - DTE; DTE is calendar days), thin axis line, short outside
+    tick marks and faint vertical gridlines. Without an LTD it keeps the
+    styling and leaves Plotly's plain DTE ticks."""
+    style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
+                 ticks="outside", ticklen=4, tickcolor="rgba(10,36,99,0.25)",
+                 showgrid=True, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
+                 title=None, tickfont=dict(size=11, color=C["font"]))
     if ltd is None or pd.isna(ltd):
-        return {}
-    ltd = pd.Timestamp(ltd)
+        return style
+    ltd = pd.Timestamp(ltd).normalize()
     lo, hi = sorted((int(dte_range[0]), int(dte_range[1])))
-    span = max(hi - lo, 1)
-    step = next((s for s in (5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 365)
-                 if span / s <= n_target), 365)
-    vals = list(range((lo // step) * step, hi + 1, step))
-    vals = [v for v in vals if lo <= v <= hi]
-    text = [f"{v}<br>{(ltd - pd.Timedelta(days=v)):%d %b '%y}" for v in vals]
-    return dict(tickmode="array", tickvals=vals, ticktext=text)
+    months = pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS")
+    months = [m for m in months if lo <= (ltd - m).days <= hi]
+    k = max(1, -(-len(months) // n_target))      # every k-th month so it never crowds
+    months = months[::-1][::k]                   # anchor on the month nearest expiry
+    vals = [(ltd - m).days for m in months]
+    text = [f"<b>{v}</b><br><span style='font-size:9px;color:#9ca3af'>{m:%b '%y}</span>"
+            for v, m in zip(vals, months)]
+    return dict(style, tickmode="array", tickvals=vals, ticktext=text)
 
 
 # ── Generic chart builder ─────────────────────────────────────────────────────
@@ -501,19 +508,16 @@ def build_chart(band, curr_df, metric_col, current_sym,
 
     fig.update_layout(
         title=dict(text=title, font=dict(size=16, color=C["font"]), x=0.01),
-        xaxis=dict(title="Days to Expiry", range=[dte_range[0], dte_range[1]],
-                   showgrid=True, gridcolor=C["grid"], zeroline=False,
-                   tickfont=dict(size=11, color=C["font"]),
-                   **_dte_date_ticks(ltd, dte_range)),
+        xaxis=dict(range=[dte_range[0], dte_range[1]], **_dte_axis_style(ltd, dte_range)),
         yaxis=dict(title=y_title, showgrid=True, gridcolor=C["grid"],
                    zeroline=False, tickformat=y_fmt,
                    ticksuffix=y_suffix, tickfont=dict(size=11, color=C["font"])),
         plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
         font=dict(color=C["font"], family="Inter, sans-serif"),
-        legend=dict(orientation="h", yanchor="top", y=-0.24, xanchor="left", x=0,
+        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="left", x=0,
                     bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
         hovermode="x unified", height=height,
-        margin=dict(l=70, r=30, t=60, b=140),
+        margin=dict(l=70, r=30, t=60, b=110),
     )
     return fig
 
@@ -1802,9 +1806,9 @@ def _view_oi():
     for i in range(1,5):
         c_i = quad_results[i-1][3] if i <= len(quad_results) else None
         ltd_i = c_i["LTD"].iloc[0] if c_i is not None and not c_i.empty else None
-        fig4.update_xaxes(range=[dte_range[0], dte_range[1]], showgrid=True, gridcolor=C["grid"],
-                          tickfont=dict(size=10), zeroline=False,
-                          **_dte_date_ticks(ltd_i, dte_range, n_target=6),
+        ax_i = _dte_axis_style(ltd_i, dte_range, n_target=6)
+        ax_i["tickfont"] = dict(size=10, color=C["font"])
+        fig4.update_xaxes(range=[dte_range[0], dte_range[1]], **ax_i,
                           row=(i-1)//2+1, col=(i-1)%2+1)
         fig4.update_yaxes(showgrid=True, gridcolor=C["grid"], tickformat=",",
                           tickfont=dict(size=10), zeroline=False,
