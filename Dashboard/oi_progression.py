@@ -410,13 +410,32 @@ def compute_band(commodity, month, hist_year_range, metric_col,
     return band, active_syms, hist_syms
 
 
+def _dte_date_ticks(ltd, dte_range, n_target=8):
+    """Two-line x ticks: DTE on top, the selected contract's calendar date
+    (LTD - DTE; DTE is calendar days) underneath. Returns {} when there's no
+    LTD so the axis falls back to Plotly's plain DTE ticks."""
+    if ltd is None or pd.isna(ltd):
+        return {}
+    ltd = pd.Timestamp(ltd)
+    lo, hi = sorted((int(dte_range[0]), int(dte_range[1])))
+    span = max(hi - lo, 1)
+    step = next((s for s in (5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 365)
+                 if span / s <= n_target), 365)
+    vals = list(range((lo // step) * step, hi + 1, step))
+    vals = [v for v in vals if lo <= v <= hi]
+    text = [f"{v}<br>{(ltd - pd.Timedelta(days=v)):%d %b '%y}" for v in vals]
+    return dict(tickmode="array", tickvals=vals, ticktext=text)
+
+
 # ── Generic chart builder ─────────────────────────────────────────────────────
 def build_chart(band, curr_df, metric_col, current_sym,
                 title, y_title, y_fmt, y_suffix,
                 outer_color, inner_color, avg_color,
                 dte_range, dte_now,
                 show_individual=False, hist_df=None, ind_metric=None,
-                height=500):
+                height=500, ltd=None):
+    if ltd is None and curr_df is not None and not curr_df.empty and "LTD" in curr_df:
+        ltd = curr_df["LTD"].iloc[0]
     fig = go.Figure()
     mid_color = C['oi_mid']   # all metric families share the Cotton teal bands
 
@@ -464,8 +483,8 @@ def build_chart(band, curr_df, metric_col, current_sym,
     if curr_df is not None and not curr_df.empty:
         fig.add_trace(go.Scatter(x=curr_df["days_to_expiry"], y=curr_df[metric_col],
             mode="lines", line=dict(color=C["current"], width=2.5),
-            name=current_sym,
-            hovertemplate=f"<b>{current_sym}</b><br>DTE: %{{x}}<br>%{{y:{y_fmt}}}{y_suffix}<extra></extra>"))
+            name=current_sym, customdata=curr_df["Date"].dt.strftime("%d %b %Y"),
+            hovertemplate=f"<b>{current_sym}</b> %{{customdata}}<br>DTE: %{{x}}<br>%{{y:{y_fmt}}}{y_suffix}<extra></extra>"))
 
         # Latest dot
         latest = curr_df.iloc[-1]
@@ -484,16 +503,17 @@ def build_chart(band, curr_df, metric_col, current_sym,
         title=dict(text=title, font=dict(size=16, color=C["font"]), x=0.01),
         xaxis=dict(title="Days to Expiry", range=[dte_range[0], dte_range[1]],
                    showgrid=True, gridcolor=C["grid"], zeroline=False,
-                   tickfont=dict(size=11, color=C["font"])),
+                   tickfont=dict(size=11, color=C["font"]),
+                   **_dte_date_ticks(ltd, dte_range)),
         yaxis=dict(title=y_title, showgrid=True, gridcolor=C["grid"],
                    zeroline=False, tickformat=y_fmt,
                    ticksuffix=y_suffix, tickfont=dict(size=11, color=C["font"])),
         plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
         font=dict(color=C["font"], family="Inter, sans-serif"),
-        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0,
+        legend=dict(orientation="h", yanchor="top", y=-0.24, xanchor="left", x=0,
                     bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
         hovermode="x unified", height=height,
-        margin=dict(l=70, r=30, t=60, b=120),
+        margin=dict(l=70, r=30, t=60, b=140),
     )
     return fig
 
@@ -1732,7 +1752,7 @@ def _view_oi():
                 outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
                 dte_range=norm_dte_range, dte_now=dte_now,
                 show_individual=show_individual, hist_df=hist_norm_n2, ind_metric="open_interest",
-                height=520,
+                height=520, ltd=curr_df["LTD"].iloc[0],
             )
             st.plotly_chart(fig_n2, use_container_width=True)
             note = f"DTE_max={dte_max}: avg DTE of each year's OI peak."
@@ -1778,10 +1798,13 @@ def _view_oi():
 
     fig4.update_layout(height=720, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
                        font=dict(color=C["font"], family="Inter, sans-serif"),
-                       showlegend=False, margin=dict(l=50,r=30,t=60,b=50))
+                       showlegend=False, margin=dict(l=50,r=30,t=60,b=70))
     for i in range(1,5):
+        c_i = quad_results[i-1][3] if i <= len(quad_results) else None
+        ltd_i = c_i["LTD"].iloc[0] if c_i is not None and not c_i.empty else None
         fig4.update_xaxes(range=[dte_range[0], dte_range[1]], showgrid=True, gridcolor=C["grid"],
                           tickfont=dict(size=10), zeroline=False,
+                          **_dte_date_ticks(ltd_i, dte_range, n_target=6),
                           row=(i-1)//2+1, col=(i-1)%2+1)
         fig4.update_yaxes(showgrid=True, gridcolor=C["grid"], tickformat=",",
                           tickfont=dict(size=10), zeroline=False,
