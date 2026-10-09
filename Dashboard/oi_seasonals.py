@@ -633,12 +633,19 @@ def _dte_axis_style(ltd, dte_range, n_target=20):
     ltd = pd.Timestamp(ltd).normalize()
     lo, hi = sorted((int(dte_range[0]), int(dte_range[1])))
     starts = pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS")
-    days = sorted(list(starts) + [m + pd.Timedelta(days=14) for m in starts])
+    starts = [m for m in starts if lo <= (ltd - m).days <= hi]
+    days = sorted(starts + [m + pd.Timedelta(days=14) for m in starts])
     days = [d for d in days if lo <= (ltd - d).days <= hi]
-    k = max(1, -(-len(days) // n_target))        # every k-th tick so it never crowds
-    days = days[::-1][::k]                       # anchor on the tick nearest expiry
+    if len(days) <= n_target:
+        fmt = "%d %b"                            # 1st + 15th of every month
+    else:
+        # Too many for 1st+15th: fall back to month starts only (thinned if
+        # still crowded) and label them 'Mon 'yy' -- a long axis spans two
+        # years, and '15 Oct' twice with no year can't be told apart.
+        k = max(1, -(-len(starts) // n_target))
+        days, fmt = starts[::-1][::k], "%b '%y"
     vals = [(ltd - d).days for d in days]
-    text = [f"{v}<br><span style='font-size:8px;color:#000000'><b>{d:%d %b}</b></span>"
+    text = [f"{v}<br><span style='font-size:8px;color:#000000'><b>{d:{fmt}}</b></span>"
             for v, d in zip(vals, days)]
     return dict(style, tickmode="array", tickvals=vals, ticktext=text)
 
