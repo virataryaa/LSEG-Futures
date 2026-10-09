@@ -412,14 +412,14 @@ def compute_band(commodity, month, hist_year_range, metric_col,
 
 def _dte_axis_style(ltd, dte_range, n_target=20):
     """Shared x-axis look for the DTE charts: ticks on the 1st and 15th of
-    each month of the contract's life, labelled DTE (black) over a small grey
+    each month of the contract's life, labelled DTE (grey) over a small bold black
     'dd Mon' (date = LTD - DTE; DTE is calendar days), thin axis line, short
     outside tick marks and faint vertical gridlines. Without an LTD it keeps
     the styling and leaves Plotly's plain DTE ticks."""
     style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
                  ticks="outside", ticklen=3, tickcolor="rgba(10,36,99,0.25)",
                  showgrid=True, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
-                 title=None, tickfont=dict(size=9, color="#000000"))
+                 title=None, tickfont=dict(size=9, color="#9ca3af"))
     if ltd is None or pd.isna(ltd):
         return style
     ltd = pd.Timestamp(ltd).normalize()
@@ -430,7 +430,7 @@ def _dte_axis_style(ltd, dte_range, n_target=20):
     k = max(1, -(-len(days) // n_target))        # every k-th tick so it never crowds
     days = days[::-1][::k]                       # anchor on the tick nearest expiry
     vals = [(ltd - d).days for d in days]
-    text = [f"{v}<br><span style='font-size:8px;color:#9ca3af'>{d:%d %b}</span>"
+    text = [f"{v}<br><span style='font-size:8px;color:#000000'><b>{d:%d %b}</b></span>"
             for v, d in zip(vals, days)]
     return dict(style, tickmode="array", tickvals=vals, ticktext=text)
 
@@ -1808,7 +1808,7 @@ def _view_oi():
         c_i = quad_results[i-1][3] if i <= len(quad_results) else None
         ltd_i = c_i["LTD"].iloc[0] if c_i is not None and not c_i.empty else None
         ax_i = _dte_axis_style(ltd_i, dte_range, n_target=20)
-        ax_i["tickfont"] = dict(size=8, color="#000000")
+        ax_i["tickfont"] = dict(size=8, color="#9ca3af")
         fig4.update_xaxes(range=[dte_range[0], dte_range[1]], **ax_i,
                           row=(i-1)//2+1, col=(i-1)%2+1)
         fig4.update_yaxes(showgrid=True, gridcolor=C["grid"], tickformat=",",
