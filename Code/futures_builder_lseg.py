@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 pd.set_option("future.no_silent_downcasting", True)  # silences a harmless lseg.data internal FutureWarning
 from pandas.tseries.holiday import (
-    AbstractHolidayCalendar, Holiday, nearest_workday, sunday_to_monday,
+    AbstractHolidayCalendar, Holiday, nearest_workday, sunday_to_monday, next_monday,
     USMartinLutherKingJr, USPresidentsDay, GoodFriday, EasterMonday,
     USMemorialDay, USLaborDay, USThanksgivingDay,
 )
@@ -103,7 +103,8 @@ def _christmas_boxing_day_holidays(year: int) -> list:
 
 def _build_uk_holidays(start_year: int = 2004, end_year: int = 2040) -> pd.DatetimeIndex:
     base = AbstractHolidayCalendar(rules=[
-        Holiday("NewYearsDay", month=1,  day=1,  observance=sunday_to_monday),
+        # Weekend New Year -> following Monday (ICE IFEU schedule: Mon 3 Jan 2028 closed).
+        Holiday("NewYearsDay", month=1,  day=1,  observance=next_monday),
         GoodFriday,
         EasterMonday,
     ])
