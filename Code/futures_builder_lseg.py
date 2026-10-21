@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 pd.set_option("future.no_silent_downcasting", True)  # silences a harmless lseg.data internal FutureWarning
 from pandas.tseries.holiday import (
-    AbstractHolidayCalendar, Holiday, nearest_workday,
+    AbstractHolidayCalendar, Holiday, nearest_workday, sunday_to_monday,
     USMartinLutherKingJr, USPresidentsDay, GoodFriday, EasterMonday,
     USMemorialDay, USLaborDay, USThanksgivingDay,
 )
@@ -76,8 +76,11 @@ TOTAL_OI_FIELD = "TOTCNTROI"      # LSEG's own whole-market open interest
 # ── HOLIDAY CALENDARS (identical to Rollex/COT_ALL migrations) ─────────────
 
 class USExchangeHolidayCalendar(AbstractHolidayCalendar):
+    # Saturday holidays close the Friday before, except New Year's Day (Dec 31
+    # stays open). Validated against ICE's published calendar
+    # (Fundamental/Calendar/Validate).
     rules = [
-        Holiday("NewYearsDay",     month=1,  day=1,  observance=nearest_workday),
+        Holiday("NewYearsDay",     month=1,  day=1,  observance=sunday_to_monday),
         USMartinLutherKingJr,
         USPresidentsDay,
         GoodFriday,
@@ -90,16 +93,23 @@ class USExchangeHolidayCalendar(AbstractHolidayCalendar):
     ]
 
 
+def _christmas_boxing_day_holidays(year: int) -> list:
+    """ICE Futures Europe Christmas closures (validated against ICE's calendar):
+    Fri/Sat -> Fri 25 + Mon 28; Sat/Sun -> Fri 24 + Mon 27; Sun/Mon -> Mon 26 + Tue 27."""
+    xmas = pd.Timestamp(year, 12, 25)
+    days = {4: [0, 3], 5: [-1, 2], 6: [1, 2]}.get(xmas.dayofweek, [0, 1])
+    return [xmas + pd.Timedelta(days=d) for d in days]
+
+
 def _build_uk_holidays(start_year: int = 2004, end_year: int = 2040) -> pd.DatetimeIndex:
     base = AbstractHolidayCalendar(rules=[
-        Holiday("NewYearsDay", month=1,  day=1,  observance=nearest_workday),
+        Holiday("NewYearsDay", month=1,  day=1,  observance=sunday_to_monday),
         GoodFriday,
         EasterMonday,
-        Holiday("Christmas",   month=12, day=25, observance=nearest_workday),
-        Holiday("BoxingDay",   month=12, day=26, observance=nearest_workday),
     ])
     hols = list(base.holidays(start=pd.Timestamp(f"{start_year}-01-01"), end=pd.Timestamp(f"{end_year}-12-31")))
     for year in range(start_year, end_year + 1):
+        hols.extend(_christmas_boxing_day_holidays(year))
         d = pd.Timestamp(year, 5, 1)
         while d.dayofweek != 0:
             d += pd.Timedelta(days=1)
@@ -185,7 +195,8 @@ CONTRACT_CONFIG = {
     "CC": CommodityConfig("CC",  "US", ["H","K","N","U","Z"], {"H":3,"K":5,"N":7,"U":9,"Z":12},
                            fnd_nth_bd_minus(nth=6, n=10), ltd_last_bd_minus(11)),
     "CT": CommodityConfig("CT",  "US", ["H","K","N","V","Z"], {"H":3,"K":5,"N":7,"V":10,"Z":12},
-                           fnd_first_bd_minus(5), ltd_last_bd_minus(17)),
+                           # ICE counts "17 bdays from end of spot month" inclusively -> 16 steps back.
+                           fnd_first_bd_minus(5), ltd_last_bd_minus(16)),
     # Sugar #11 trades much further out than the other softs — extend the
     # forward horizon so the board doesn't cut off 3 live contracts early.
     "SB": CommodityConfig("SB",  "US", ["H","K","N","V"], {"H":3,"K":5,"N":7,"V":10},
