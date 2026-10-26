@@ -410,35 +410,38 @@ def compute_band(commodity, month, hist_year_range, metric_col,
     return band, active_syms, hist_syms
 
 
-def _dte_axis_style(ltd, dte_range, n_target=20):
-    """Shared x-axis look for the DTE charts: ticks on the 1st and 15th of
-    each month of the contract's life, labelled DTE (grey) over a small bold black
-    'dd Mon' (date = LTD - DTE; DTE is calendar days), thin axis line, short
-    outside tick marks and faint vertical gridlines. Without an LTD it keeps
-    the styling and leaves Plotly's plain DTE ticks."""
+def _dte_axis_style(ltd, dte_range, n_target=10):
+    """Shared x-axis for the DTE charts. The data sits on a days-to-expiry axis
+    but gets read by date, so each labelled tick carries both: a bold navy
+    date over a grey 'NNNd' (date = LTD - DTE; DTE is calendar days). Only
+    month starts are labelled and labels stay flat -- ~20 two-line labels used
+    to make Plotly turn them sideways into an unreadable column. The 15th of
+    each month is an unlabelled gridline. Past n_target labels, every k-th
+    month is labelled as "Mon 'yy" (a long axis spans two years). Without an
+    LTD it keeps the styling and leaves Plotly's plain DTE ticks."""
     style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
                  ticks="outside", ticklen=3, tickcolor="rgba(10,36,99,0.25)",
-                 showgrid=True, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
-                 title=None, tickfont=dict(size=9, color="#9ca3af"))
+                 showgrid=True, gridcolor="rgba(10,36,99,0.05)", zeroline=False,
+                 title=None, tickangle=0, tickfont=dict(size=9, color="#9ca3af"))
     if ltd is None or pd.isna(ltd):
         return style
     ltd = pd.Timestamp(ltd).normalize()
     lo, hi = sorted((int(dte_range[0]), int(dte_range[1])))
-    starts = pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS")
-    starts = [m for m in starts if lo <= (ltd - m).days <= hi]
-    days = sorted(starts + [m + pd.Timedelta(days=14) for m in starts])
-    days = [d for d in days if lo <= (ltd - d).days <= hi]
-    if len(days) <= n_target:
-        fmt = "%d %b"                            # 1st + 15th of every month
-    else:
-        # Too many for 1st+15th: fall back to month starts only (thinned if
-        # still crowded) and label them 'Mon 'yy' -- a long axis spans two
-        # years, and '15 Oct' twice with no year can't be told apart.
-        k = max(1, -(-len(starts) // n_target))
-        days, fmt = starts[::-1][::k], "%b '%y"
-    vals = [(ltd - d).days for d in days]
-    text = [f"{v}<br><span style='font-size:8px;color:#000000'><b>{d:{fmt}}</b></span>"
-            for v, d in zip(vals, days)]
+    in_rng = lambda d: lo <= (ltd - d).days <= hi
+    all_starts = list(pd.date_range((ltd - pd.Timedelta(days=hi)).replace(day=1), ltd, freq="MS"))
+    starts = [m for m in all_starts if in_rng(m)]
+    mids = [m + pd.Timedelta(days=14) for m in all_starts if in_rng(m + pd.Timedelta(days=14))]
+    k = max(1, -(-len(starts) // n_target))
+    labelled = set(starts[::-1][::k])            # anchored on the month nearest expiry
+    vals, text = [], []
+    for d in sorted(starts + mids):
+        v = (ltd - d).days
+        vals.append(v)
+        if d in labelled:
+            dt = f"1 {d:%b}" if k == 1 else f"{d:%b '%y}"
+            text.append(f"<span style='color:#1e3a6e'><b>{dt}</b></span><br>{v}d")
+        else:
+            text.append("")
     return dict(style, tickmode="array", tickvals=vals, ticktext=text)
 
 
@@ -1539,99 +1542,101 @@ def _stored(key, default, valid):
 
 
 with st.sidebar:
-    st.markdown("<style>.sb-title{font-family:'Fraunces',Georgia,serif;font-size:1.5rem;font-weight:600;color:#0a2463;margin-bottom:2px}.sb-caption{font-size:11px;color:#7a86a8;margin-bottom:16px;line-height:1.4}</style><div class='sb-title'>Futures Dashboard</div><div class='sb-caption'>Open interest, volume and progression by contract.</div>", unsafe_allow_html=True)
-    st.markdown("---")
+    st.markdown("<div class='sb-brand'><div class='sb-eyebrow'>LSEG &middot; Softs Futures</div>"
+                "<div class='sb-title'>Futures Dashboard</div>"
+                "<div class='sb-caption'>Open interest, volume and progression by contract.</div></div>",
+                unsafe_allow_html=True)
+    with st.container(key="sb_controls"):
 
-    commodity = st.selectbox("Commodity", list(COMMODITIES.keys()),
-                             format_func=lambda x: COMMODITIES[x][1])
+        commodity = st.selectbox("Commodity", list(COMMODITIES.keys()),
+                                 format_func=lambda x: COMMODITIES[x][1])
 
-    mt              = _mtime(commodity)
-    df_sidebar      = load_data(commodity, mt)
-    avail_months    = sorted(df_sidebar["month"].unique())
-    most_active     = _most_active_month(df_sidebar)
-    if most_active not in avail_months:
-        most_active = avail_months[0]
+        mt              = _mtime(commodity)
+        df_sidebar      = load_data(commodity, mt)
+        avail_months    = sorted(df_sidebar["month"].unique())
+        most_active     = _most_active_month(df_sidebar)
+        if most_active not in avail_months:
+            most_active = avail_months[0]
 
-    _mk = f"sb_month_{commodity}"
-    _month_ok = lambda m: m in avail_months
-    if "month" in _show:
-        _seed(_mk, most_active, _month_ok)
-        selected_month = st.selectbox("Contract Month", avail_months, key=_mk,
-                                      format_func=lambda x: f"{MONTH_NAMES.get(x,x)} ({x})")
-    else:
-        selected_month = _stored(_mk, most_active, _month_ok)
-
-    df_month    = df_sidebar[df_sidebar["month"] == selected_month].copy()
-    today       = pd.Timestamp(date.today())
-    active_syms, hist_syms = _split_contracts(df_month)
-
-    if not active_syms:
-        st.error("No active contract found.")
-        st.stop()
-
-    _ck = f"sb_contract_{commodity}_{selected_month}"
-    _contract_ok = lambda c: c in active_syms
-    if "contract" in _show:
-        _seed(_ck, active_syms[0], _contract_ok)
-        current_contract = st.selectbox("Current Contract", active_syms, key=_ck)
-    else:
-        current_contract = _stored(_ck, active_syms[0], _contract_ok)
-
-    years_all  = sorted(df_month[df_month["ice_symbol"].isin(hist_syms)]["year"].unique())
-    if years_all:
-        _y0, _y1 = int(years_all[0]), int(years_all[-1])
-        _hk = f"sb_hist_{commodity}_{selected_month}"
-        _hist_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
-                              and _y0 <= r[0] <= r[1] <= _y1)
-        if "hist" in _show:
-            _seed(_hk, (_y0, _y1), _hist_ok)
-            hist_range = st.slider("Historical Years", _y0, _y1, key=_hk)
+        _mk = f"sb_month_{commodity}"
+        _month_ok = lambda m: m in avail_months
+        if "month" in _show:
+            _seed(_mk, most_active, _month_ok)
+            selected_month = st.selectbox("Contract Month", avail_months, key=_mk,
+                                          format_func=lambda x: f"{MONTH_NAMES.get(x,x)} ({x})")
         else:
-            hist_range = tuple(_stored(_hk, (_y0, _y1), _hist_ok))
-    else:
-        hist_range = (0, 0)
+            selected_month = _stored(_mk, most_active, _month_ok)
 
-    max_dte      = int(df_month["days_to_expiry"].max())
-    max_dte_r    = (max_dte // 10) * 10
-    dte_opts_rev = list(range(max_dte_r, -1, -10))
-    _dte_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
-                         and r[0] in dte_opts_rev and r[1] in dte_opts_rev)
-    default_upper = 300 if 300 in dte_opts_rev else dte_opts_rev[0]
-    _dk = f"sb_dte_{commodity}_{selected_month}"
-    if "dte" in _show:
-        _seed(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
-        dte_sel = st.select_slider("Days to Expiry Range (Raw)", options=dte_opts_rev, key=_dk)
-    else:
-        dte_sel = _stored(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
-    dte_range    = [dte_sel[0], dte_sel[1]]   # [high DTE, low DTE] — chart is reversed
+        df_month    = df_sidebar[df_sidebar["month"] == selected_month].copy()
+        today       = pd.Timestamp(date.today())
+        active_syms, hist_syms = _split_contracts(df_month)
 
-    default_norm_upper = 150 if 150 in dte_opts_rev else dte_opts_rev[0]
-    _nk = f"sb_norm_{commodity}_{selected_month}"
-    if "norm" in _show:
-        _seed(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
-        norm_dte_sel = st.select_slider("Days to Expiry Range (Normalized)",
-                                        options=dte_opts_rev, key=_nk)
-    else:
-        norm_dte_sel = _stored(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
-    norm_dte_range = [norm_dte_sel[0], norm_dte_sel[1]]
+        if not active_syms:
+            st.error("No active contract found.")
+            st.stop()
 
-    if "indiv" in _show:
-        _seed("sb_indiv", False, lambda b: isinstance(b, bool))
-        show_individual = st.toggle("Show individual years", key="sb_indiv")
-    else:
-        show_individual = _stored("sb_indiv", False, lambda b: isinstance(b, bool))
+        _ck = f"sb_contract_{commodity}_{selected_month}"
+        _contract_ok = lambda c: c in active_syms
+        if "contract" in _show:
+            _seed(_ck, active_syms[0], _contract_ok)
+            current_contract = st.selectbox("Current Contract", active_syms, key=_ck)
+        else:
+            current_contract = _stored(_ck, active_syms[0], _contract_ok)
 
-    # Drives volume charts that sit in two different Volume subtabs, so it
-    # cannot live inside either one of them.
-    if "roll" in _show:
-        _seed("sb_roll", 10, lambda n: isinstance(n, int) and 1 <= n <= 30)
-        roll_n = st.slider("Rolling Volume Window (days)", min_value=1, max_value=30,
-                           step=1, key="sb_roll",
-                           help="Applied to daily volume before plotting")
-    else:
-        roll_n = _stored("sb_roll", 10, lambda n: isinstance(n, int) and 1 <= n <= 30)
+        years_all  = sorted(df_month[df_month["ice_symbol"].isin(hist_syms)]["year"].unique())
+        if years_all:
+            _y0, _y1 = int(years_all[0]), int(years_all[-1])
+            _hk = f"sb_hist_{commodity}_{selected_month}"
+            _hist_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
+                                  and _y0 <= r[0] <= r[1] <= _y1)
+            if "hist" in _show:
+                _seed(_hk, (_y0, _y1), _hist_ok)
+                hist_range = st.slider("Historical Years", _y0, _y1, key=_hk)
+            else:
+                hist_range = tuple(_stored(_hk, (_y0, _y1), _hist_ok))
+        else:
+            hist_range = (0, 0)
 
-    st.markdown("---")
+        max_dte      = int(df_month["days_to_expiry"].max())
+        max_dte_r    = (max_dte // 10) * 10
+        dte_opts_rev = list(range(max_dte_r, -1, -10))
+        _dte_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
+                             and r[0] in dte_opts_rev and r[1] in dte_opts_rev)
+        default_upper = 300 if 300 in dte_opts_rev else dte_opts_rev[0]
+        _dk = f"sb_dte_{commodity}_{selected_month}"
+        if "dte" in _show:
+            _seed(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
+            dte_sel = st.select_slider("Days to Expiry Range (Raw)", options=dte_opts_rev, key=_dk)
+        else:
+            dte_sel = _stored(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
+        dte_range    = [dte_sel[0], dte_sel[1]]   # [high DTE, low DTE] — chart is reversed
+
+        default_norm_upper = 150 if 150 in dte_opts_rev else dte_opts_rev[0]
+        _nk = f"sb_norm_{commodity}_{selected_month}"
+        if "norm" in _show:
+            _seed(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
+            norm_dte_sel = st.select_slider("Days to Expiry Range (Normalized)",
+                                            options=dte_opts_rev, key=_nk)
+        else:
+            norm_dte_sel = _stored(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
+        norm_dte_range = [norm_dte_sel[0], norm_dte_sel[1]]
+
+        if "indiv" in _show:
+            _seed("sb_indiv", False, lambda b: isinstance(b, bool))
+            show_individual = st.toggle("Show individual years", key="sb_indiv")
+        else:
+            show_individual = _stored("sb_indiv", False, lambda b: isinstance(b, bool))
+
+        # Drives volume charts that sit in two different Volume subtabs, so it
+        # cannot live inside either one of them.
+        if "roll" in _show:
+            _seed("sb_roll", 10, lambda n: isinstance(n, int) and 1 <= n <= 30)
+            roll_n = st.slider("Rolling Volume Window (days)", min_value=1, max_value=30,
+                               step=1, key="sb_roll",
+                               help="Applied to daily volume before plotting")
+        else:
+            roll_n = _stored("sb_roll", 10, lambda n: isinstance(n, int) and 1 <= n <= 30)
+
     render_data_freshness(st.sidebar)
 
 
@@ -1766,6 +1771,54 @@ st.markdown("""
   .spotsum-wrap, .spotgrid-wrap, .expchg-wrap, .sprmat-wrap, .mx-wrap, [data-testid="stMain"] div:has(> table.oivol-tbl) {
     border-radius:14px !important; box-shadow:0 1px 2px rgba(10,36,99,.04), 0 8px 24px rgba(10,36,99,.06) !important; }
   .spotsum, .spotgrid, .expchg, .sprmat, .mx-tbl, .oivol-tbl { font-variant-numeric:tabular-nums; }
+  /* tighter top: a style-only st.markdown still takes a row plus a gap, so hide those;
+     the header goes see-through (its buttons stay clickable) so content can start higher */
+  [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] > style:only-child) { display:none !important; }
+  .block-container { padding-top:2.4rem !important; }
+  [data-testid="stHeader"] { background:transparent !important; pointer-events:none; }
+  [data-testid="stHeader"] button, [data-testid="stHeader"] a, [data-testid="stToolbar"] { pointer-events:auto; }
+  [data-testid="stSidebarHeader"] { height:2.2rem !important; min-height:0 !important; padding:.5rem .75rem 0 !important; }
+  [data-testid="stSidebarUserContent"] { padding-top:.25rem !important; }
+  /* sidebar: navy brand card, glass controls card, navy slider thumbs */
+  .sb-brand { position:relative; overflow:hidden; border-radius:16px; padding:16px 16px 14px; margin:0 0 4px;
+    background:linear-gradient(145deg, #0a2463 0%, #1e3a6e 55%, #2b4a8a 100%);
+    box-shadow:0 10px 26px rgba(10,36,99,.28), inset 0 1px 0 rgba(255,255,255,.14); }
+  .sb-brand::after { content:""; position:absolute; top:-45%; right:-30%; width:75%; height:130%; pointer-events:none;
+    background:radial-gradient(circle, rgba(255,255,255,.18), rgba(255,255,255,0) 65%); }
+  .sb-eyebrow { font-family:'Plus Jakarta Sans','Inter',sans-serif; font-size:9.5px; font-weight:700; letter-spacing:.18em;
+    text-transform:uppercase; color:rgba(255,255,255,.62); margin-bottom:6px; }
+  .sb-brand .sb-title { font-size:1.42rem !important; font-weight:600; color:#ffffff !important; line-height:1.15; margin:0 0 5px; }
+  .sb-brand .sb-caption { font-size:11px; color:rgba(255,255,255,.74); line-height:1.4; }
+  .st-key-sb_controls { background:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.95); border-radius:16px; padding:12px 12px 6px;
+    box-shadow:0 1px 2px rgba(10,36,99,.05), 0 8px 24px rgba(10,36,99,.07), inset 0 1px 0 #ffffff; }
+  [data-testid="stSidebar"] [data-testid="stSlider"] [role="slider"] { background:linear-gradient(180deg,#2b4a8a,#1e3a6e) !important;
+    box-shadow:0 0 0 3px rgba(255,255,255,.95), 0 2px 6px rgba(10,36,99,.3) !important; }
+  [data-testid="stSliderThumbValue"] { color:#1e3a6e !important; font-family:'Plus Jakarta Sans','Inter',sans-serif !important; font-weight:700 !important; }
+  [data-testid="stSliderTickBarMin"], [data-testid="stSliderTickBarMax"] { color:#9ca3af !important; }
+  /* section heads: navy wash with a navy-to-wine marker */
+  .sec-h { display:flex; align-items:center; gap:10px; margin:16px 0 8px; padding:7px 12px; border-radius:10px;
+    background:linear-gradient(90deg, rgba(43,74,138,.09) 0%, rgba(43,74,138,.035) 55%, rgba(43,74,138,0) 100%);
+    font-family:'Plus Jakarta Sans','Inter',sans-serif; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#0a2463; }
+  .sec-h::before { content:""; width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#2b4a8a,#7b1e3a); }
+  /* icy All-Futures-OI tables: pale glass headers instead of solid navy, hairline rows,
+     Tuesday (COT) rows tinted navy with an accent bar; the bar-chart cells keep their own colour */
+  [data-testid="stMain"] .spotsum-wrap, [data-testid="stMain"] .spotgrid-wrap, [data-testid="stMain"] .expchg-wrap {
+    border:1px solid rgba(43,74,138,.12) !important; background:#ffffff; margin-bottom:6px; }
+  [data-testid="stMain"] table.spotsum th, [data-testid="stMain"] table.spotgrid th, [data-testid="stMain"] table.expchg th {
+    background:linear-gradient(180deg,#f7f9fd,#e8eef9) !important; color:#1e3a6e !important;
+    font-family:'Plus Jakarta Sans','Inter',sans-serif !important; font-weight:700 !important; letter-spacing:.08em !important;
+    padding:6px 6px !important; border-bottom:1px solid rgba(43,74,138,.18) !important; }
+  [data-testid="stMain"] table.spotsum td, [data-testid="stMain"] table.spotgrid td, [data-testid="stMain"] table.expchg td {
+    padding:2px 6px !important; border-bottom:1px solid rgba(43,74,138,.06) !important; }
+  [data-testid="stMain"] table.spotgrid .date-cell, [data-testid="stMain"] table.expchg .date-cell, [data-testid="stMain"] table.spotsum td.lbl {
+    color:#1e3a6e !important; box-shadow:inset -1px 0 0 0 rgba(43,74,138,.12) !important; }
+  [data-testid="stMain"] table.spotsum tr.delta td.lbl { color:#8a94a8 !important; font-weight:500 !important; }
+  [data-testid="stMain"] table.spotsum tr.tue-row, [data-testid="stMain"] table.spotgrid tr.tue-row, [data-testid="stMain"] table.expchg tr.tue-row {
+    background:rgba(43,74,138,.06) !important; }
+  [data-testid="stMain"] tr.tue-row td:first-child { background:#edf1f9 !important;
+    box-shadow:inset 3px 0 0 #2b4a8a, inset -1px 0 0 0 rgba(43,74,138,.12) !important; }
+  [data-testid="stMain"] table.spotsum tbody tr:hover td, [data-testid="stMain"] table.spotgrid tbody tr:hover td,
+  [data-testid="stMain"] table.expchg tbody tr:hover td { background-color:rgba(43,74,138,.08); }
 </style>""", unsafe_allow_html=True)
 
 
@@ -1886,7 +1939,7 @@ def _view_oi():
     for i in range(1,5):
         c_i = quad_results[i-1][3] if i <= len(quad_results) else None
         ltd_i = c_i["LTD"].iloc[0] if c_i is not None and not c_i.empty else None
-        ax_i = _dte_axis_style(ltd_i, dte_range, n_target=20)
+        ax_i = _dte_axis_style(ltd_i, dte_range, n_target=6)
         ax_i["tickfont"] = dict(size=8, color="#9ca3af")
         fig4.update_xaxes(range=[dte_range[0], dte_range[1]], **ax_i,
                           row=(i-1)//2+1, col=(i-1)%2+1)
@@ -2808,11 +2861,11 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
 
     # Change wrt COT date sits ABOVE the daily grid: it's the summary read
     # first, so it shouldn't be buried under a long scrolling table.
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:4px 0 4px'>"
+    st.markdown("<div class='sec-h'>"
                "Change wrt COT date</div>", unsafe_allow_html=True)
     st.markdown(build_spot_summary_html(spot_data, spot_lookback, leg1, leg2, price_source), unsafe_allow_html=True)
 
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
+    st.markdown("<div class='sec-h'>"
                "Daily Grid</div>", unsafe_allow_html=True)
     html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
     if html_spot is None:
@@ -2821,7 +2874,7 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
         st.markdown(html_spot, unsafe_allow_html=True)
 
     # ── Daily OI Change per Expiry — always visible, no expander ────────────
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
+    st.markdown("<div class='sec-h'>"
                "Daily OI Change per Expiry</div>", unsafe_allow_html=True)
     html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
     if html_expchg is None:
@@ -2865,7 +2918,7 @@ def _render_all_futures_oi_charts(commodity: str, mt: float):
         st.plotly_chart(fig_oi_spread, use_container_width=True)
 
     # ── OI Change vs Price Change — own "which future" selector right above ──
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
+    st.markdown("<div class='sec-h'>"
                "OI Change vs Price Change</div>", unsafe_allow_html=True)
     scatter_opts = [spot_label] + syms_spot
     scatter_sel = st.selectbox("Which future to study?", scatter_opts, index=0, key="charts_scatter_future")
@@ -2897,7 +2950,7 @@ def _render_spreads_tab(commodity: str, mt: float):
     with dc2:
         older_date = _calendar_date("Older Date", all_dates, min_d, max_d, default_older_d, "spreads_older")
 
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:10px 0 4px'>"
+    st.markdown("<div class='sec-h'>"
                f"Term Structure — {pd.Timestamp(snapshot_date).strftime('%d %b %Y')} vs "
                f"{pd.Timestamp(older_date).strftime('%d %b %Y')}</div>",
                unsafe_allow_html=True)
@@ -2915,7 +2968,7 @@ def _render_spreads_tab(commodity: str, mt: float):
             st.plotly_chart(fig_curve_spread, use_container_width=True)
 
     # ── Spread Matrix — every pair, not just adjacent, two tables side by side ─
-    st.markdown("<div style='font-size:.85rem;font-weight:600;color:#1a1a1a;margin:14px 0 4px'>"
+    st.markdown("<div class='sec-h'>"
                f"Spread Matrix (row minus column) — New Date: "
                f"{pd.Timestamp(snapshot_date).strftime('%d %b %Y')}</div>", unsafe_allow_html=True)
     st.caption("Each pair shown once — row's contract is the earlier month, so a cell is "

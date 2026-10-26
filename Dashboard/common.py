@@ -284,21 +284,36 @@ def render_data_freshness(st_target=None):
         newest_oi = oi if newest_oi is None else max(newest_oi, oi)
         lag = pd.notna(px) and px > oi
         any_lag = any_lag or lag
-        dot = "#f59e0b" if lag else "#16a34a"
-        note = f" <span style='color:#9ca3af'>(px {px:%d %b})</span>" if lag else ""
+        note = f" <span class='fr-px'>px {px:%d %b}</span>" if lag else ""
         rows.append(
-            f"<tr><td style='color:#6b7280'>{c}</td>"
-            f"<td style='text-align:right'>{oi:%d %b}{note}</td>"
-            f"<td style='text-align:right'><span style='color:{dot}'>&#9679;</span></td></tr>")
+            f"<tr><td class='fr-c'>{c}</td>"
+            f"<td class='fr-d'>{oi:%d %b}{note}</td>"
+            f"<td class='fr-s'><span class='fr-dot{' lag' if lag else ''}'></span></td></tr>")
 
     if not rows:
         return
-    tip = "Amber: OI not out yet." if any_lag else "All up to date."
+    tip = ("<span class='fr-tip lag'>OI not out yet</span>" if any_lag
+           else "<span class='fr-tip'>All up to date</span>")
+    css = ("<style>"
+           ".fr-card{background:rgba(255,255,255,.55);border:1px solid rgba(255,255,255,.95);border-radius:14px;"
+           "padding:10px 12px 6px;margin-top:6px;font-family:'Plus Jakarta Sans','Inter',sans-serif;"
+           "box-shadow:0 1px 2px rgba(10,36,99,.05),0 8px 24px rgba(10,36,99,.07),inset 0 1px 0 #fff}"
+           ".fr-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:9.5px;"
+           "font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#7a86a8}"
+           ".fr-tip{font-size:10px;font-weight:600;letter-spacing:.02em;text-transform:none;color:#16a34a}"
+           ".fr-tip.lag{color:#b45309}"
+           ".fr-t{width:100%;border-collapse:collapse;font-size:11.5px;font-variant-numeric:tabular-nums}"
+           ".fr-t td{padding:3px 2px;border-bottom:1px solid rgba(43,74,138,.07)}"
+           ".fr-t tr:last-child td{border-bottom:none}"
+           ".fr-c{font-weight:700;color:#1e3a6e;letter-spacing:.04em}"
+           ".fr-d{text-align:right;color:#334155}.fr-px{color:#9ca3af;font-size:10px;margin-left:4px}"
+           ".fr-s{text-align:right;width:16px}"
+           ".fr-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#16a34a;"
+           "box-shadow:0 0 0 3px rgba(22,163,74,.15)}"
+           ".fr-dot.lag{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.18)}"
+           "</style>")
     tgt.markdown(
-        "<div style='font-size:.70rem;font-weight:600;color:#6b7280;"
-        "letter-spacing:.02em;margin:.2rem 0 .25rem'>OI AS OF</div>"
-        "<table style='width:100%;font-size:.68rem;border-collapse:collapse'>"
-        + "".join(rows) + "</table>",
+        css + "<div class='fr-card'><div class='fr-h'><span>OI as of</span>" + tip + "</div>"
+        "<table class='fr-t'>" + "".join(rows) + "</table></div>",
         unsafe_allow_html=True)
-    tgt.caption(tip)
 
