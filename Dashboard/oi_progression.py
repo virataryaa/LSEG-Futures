@@ -1751,6 +1751,11 @@ st.markdown("""
   div[role="radiogroup"] label:not(:has(input:checked)):hover, .stTabs [data-baseweb="tab"]:not([aria-selected="true"]):hover,
   .st-key-nav_section button[kind="segmented_control"]:hover { background:rgba(43,74,138,.07) !important; transform:translateY(-1px); }
   .st-key-nav_view { border-bottom:1px solid rgba(43,74,138,.12); }
+  /* All Futures OI (3rd view; only the Open Interest group has a 3rd) gets a short, faint wine
+     underline while unselected so it reads as the key tab; selected, it takes the normal navy line */
+  .st-key-nav_view button[kind^="segmented_control"]:nth-of-type(3) { position:relative; }
+  .st-key-nav_view button[kind="segmented_control"]:nth-of-type(3)::after { content:""; position:absolute; left:50%; bottom:2px;
+    width:18px; height:2px; margin-left:-9px; border-radius:2px; background:rgba(123,30,58,.45); }
   .st-key-nav_view button[kind="segmented_controlActive"] {
     background:linear-gradient(180deg, rgba(43,74,138,0), rgba(43,74,138,.07)) !important; border-bottom:2px solid #1e3a6e !important; }
   /* dropdowns: glass pill, lift on hover, burgundy focus ring + caret */
