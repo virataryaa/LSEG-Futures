@@ -873,6 +873,16 @@ def _syms_in_window(data: dict, dates) -> list:
     return [s for s in data["all_syms"] if live.get(s, False)]
 
 
+def _table_syms(data: dict, dates, include_expired: bool = False) -> list:
+    """Columns for the All Futures OI tables -- one rule for all three so each
+    contract sits directly under itself. Active months always; months that
+    expired inside the window only when asked (the user changed the lookback),
+    and then on the far right so the active columns keep their place."""
+    win = _syms_in_window(data, dates)
+    active = [x for x in win if x in data["syms"]]
+    return active + ([x for x in win if x not in data["syms"]] if include_expired else [])
+
+
 def _syms_on(data: dict, snapshot_date) -> list:
     """Contract months with OI on one specific date, expiry-ascending — used
     by the snapshot (term-structure / matrix) views so a historical snapshot
@@ -890,7 +900,8 @@ _GRID_COL_CSS = (
 )
 
 
-def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str, leg2: str):
+def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str, leg2: str,
+                  include_expired: bool = False):
     """Everything the Daily Grid and the Change-wrt-COT table both need, derived once
     so the two always show the same columns, price basis and spread."""
     oi_piv = data["oi_piv"]; px_piv = data["px_piv"]
@@ -914,7 +925,7 @@ def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str,
     # that has since expired mid-window still counts in Total/OI Chg (those
     # come from the full oi_piv regardless of which columns are shown), it
     # just no longer gets its own column.
-    syms = [s for s in _syms_in_window(data, dates) if s in data["syms"]]
+    syms = _table_syms(data, dates, include_expired)
     have_spread = leg1 != leg2 and leg1 in px_piv.columns and leg2 in px_piv.columns
     spread = (px_piv[leg1] - px_piv[leg2]) if have_spread else pd.Series(dtype=float)
     spread_label = f"{leg1}-{_leg_suffix(leg2)}" if have_spread else "Spread"
@@ -934,14 +945,14 @@ def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str,
 
 
 def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: str,
-                            price_source: str = "Spot (Most OI)") -> str:
+                            price_source: str = "Spot (Most OI)", include_expired: bool = False) -> str:
     """LAST (today's raw OI) + the day-over-day and since-last-COT deltas,
     then the last two COT Tuesdays (the session itself, not the Friday
     report) with their own week-over-week deltas. This table only tracks
     OI on Tuesday sessions — it doesn't read the published COT report — so
     the most recent Tuesday with OI data is used as soon as it's in, with
     no wait for Friday's release."""
-    ctx = _grid_context(data, table_lookback, price_source, leg1, leg2)
+    ctx = _grid_context(data, table_lookback, price_source, leg1, leg2, include_expired)
     if ctx is None:
         return "<p>No data.</p>"
     oi_piv = ctx["oi_piv"]; total_oi = ctx["total_oi"]; spot_price = ctx["spot_price"]
@@ -1061,7 +1072,8 @@ def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: st
 
 @st.cache_data(max_entries=50, show_spinner=False)
 def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, leg2: str,
-                                price_source: str = "Spot (Most OI)", mtime: float = 0.0):
+                                price_source: str = "Spot (Most OI)", mtime: float = 0.0,
+                                include_expired: bool = False):
     """Daily grid: per-contract OI, Total, Price (spot by default — see
     price_source), day OI/Spot-OI changes, Non-Spot OI, a user-picked
     calendar-spread, and the trailing 5-session mean of the daily OI Chg (Total).
@@ -1070,7 +1082,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     that expired mid-window — so Total is the real board figure on every
     row and matches the Comprehensive Grid tab."""
     data = build_spot_oi_data(commodity, mtime)
-    ctx = _grid_context(data, table_lookback, price_source, leg1, leg2)
+    ctx = _grid_context(data, table_lookback, price_source, leg1, leg2, include_expired)
     if ctx is None:
         return None
     oi_piv = ctx["oi_piv"]; px_piv = ctx["px_piv"]; total_oi = ctx["total_oi"]
@@ -1141,7 +1153,8 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
-def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: float = 0.0):
+def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: float = 0.0,
+                                include_expired: bool = False):
     """Day-over-day OI change for every individual contract month (not the
     aggregate) — each column scaled to its own range, since a front month's
     change dwarfs a far month's."""
@@ -1157,10 +1170,7 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
     if not dates:
         return None
     dates_desc = sorted(dates, reverse=True)
-    # Same columns, same order as the Daily Grid above so each contract sits
-    # under itself; months that expired in the window go on the far right.
-    win = _syms_in_window(data, dates)
-    syms = [x for x in win if x in data["syms"]] + [x for x in win if x not in data["syms"]]
+    syms = _table_syms(data, dates, include_expired)   # same columns as the Daily Grid
     col_vmax = per_chg.loc[dates].abs().max()
 
     css = f"""<style>
@@ -2856,6 +2866,9 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
             with c0:
                 spot_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
                                                 value=90, step=10, key="recap_table_lookback")
+                # Expired months only join the tables once the lookback is picked
+                # by hand; the default view is the live curve.
+                show_expired = spot_lookback != 90
             with c1:
                 spot_label = f"Spot (Most OI: {latest_spot_sym})" if latest_spot_sym else "Spot (Most OI)"
                 price_opts = [spot_label] + syms_spot
@@ -2876,11 +2889,11 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
     # first, so it shouldn't be buried under a long scrolling table.
     st.markdown("<div class='sec-h'>"
                "Change wrt COT date</div>", unsafe_allow_html=True)
-    st.markdown(build_spot_summary_html(spot_data, spot_lookback, leg1, leg2, price_source), unsafe_allow_html=True)
+    st.markdown(build_spot_summary_html(spot_data, spot_lookback, leg1, leg2, price_source, show_expired), unsafe_allow_html=True)
 
     st.markdown("<div class='sec-h'>"
                "Daily Grid</div>", unsafe_allow_html=True)
-    html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt)
+    html_spot = build_spot_daily_table_html(commodity, spot_lookback, leg1, leg2, price_source, mt, show_expired)
     if html_spot is None:
         st.info("No data in this window.")
     else:
@@ -2889,7 +2902,7 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
     # ── Daily OI Change per Expiry — always visible, no expander ────────────
     st.markdown("<div class='sec-h'>"
                "Daily OI Change per Expiry</div>", unsafe_allow_html=True)
-    html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt)
+    html_expchg = build_expiry_chg_table_html(commodity, spot_lookback, mt, show_expired)
     if html_expchg is None:
         st.info("No data in this window.")
     else:
