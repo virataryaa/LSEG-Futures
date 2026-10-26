@@ -1699,6 +1699,75 @@ st.markdown(f"""<style>
   .st-key-nav_view button[kind="segmented_controlActive"] p {{ color:{_NAV_ACCENT} !important; font-weight:600 !important; }}
 </style>""", unsafe_allow_html=True)
 
+# ── Ice theme (ported from COT Comprehensive): fonts, glass sidebar, glass pill
+# tracks, glass dropdowns, chart cards, icy tables. Sits after the nav CSS so it
+# wins over it. Fonts get their own tag: @import must be a stylesheet's first rule.
+st.markdown("<style>@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&"
+            "family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');</style>",
+            unsafe_allow_html=True)
+st.markdown("""
+<style>
+  html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], .main, [data-testid="stHeader"] { background:#fafafa !important; }
+  .block-container { max-width:1600px; }
+  html, body, [class*="css"], [data-testid="stAppViewContainer"], .stMarkdown, button, input, textarea {
+    font-family:'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif !important; -webkit-font-smoothing:antialiased; }
+  h1, h2, h3, h4, h5, h6, .stTabs [data-baseweb="tab"] p, div[role="radiogroup"] label p, [data-testid="stCaptionContainer"],
+  [data-testid="stWidgetLabel"] p, .st-key-nav_section button p, .st-key-nav_view button p {
+    font-family:'Plus Jakarta Sans','Inter',system-ui,sans-serif !important; letter-spacing:.01em; }
+  .sb-title { font-family:'Fraunces', Georgia, serif !important; }
+  [data-testid="stSidebar"] { background:linear-gradient(160deg, rgba(246,248,253,.92) 0%, rgba(233,238,248,.88) 55%, rgba(240,236,246,.9) 100%) !important;
+    -webkit-backdrop-filter:blur(24px) saturate(160%); backdrop-filter:blur(24px) saturate(160%);
+    border-right:1px solid rgba(255,255,255,.75) !important; box-shadow:inset -1px 0 0 rgba(10,36,99,.06), 6px 0 28px rgba(10,36,99,.06); }
+  [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size:10.5px !important; font-weight:700 !important; letter-spacing:.14em !important;
+    text-transform:uppercase; color:#7a86a8 !important; }
+  [data-testid="stMetricLabel"] { font-family:'Plus Jakarta Sans','Inter',sans-serif !important; letter-spacing:.08em; text-transform:uppercase; color:#7a86a8 !important; }
+  [data-testid="stMetricValue"] { color:#0a2463 !important; font-variant-numeric:tabular-nums; }
+  /* pill tracks (tabs, radios, section nav): frosted glass, navy gradient pick, soft hover */
+  div[role="radiogroup"], .stTabs [data-baseweb="tab-list"], .st-key-nav_section [data-testid="stButtonGroup"] > div {
+    background:linear-gradient(160deg, rgba(250,252,255,.97), rgba(236,242,251,.93) 60%, rgba(229,237,249,.9)) !important;
+    border:1px solid rgba(43,74,138,.14) !important; box-shadow:0 4px 16px rgba(30,58,110,.07), inset 0 1px 0 rgba(255,255,255,.95) !important; }
+  div[role="radiogroup"] label:has(input:checked), .stTabs [aria-selected="true"], .st-key-nav_section button[kind="segmented_controlActive"] {
+    background:linear-gradient(180deg, #2b4a8a, #1e3a6e) !important; color:#ffffff !important;
+    box-shadow:0 2px 8px rgba(30,58,110,.28), inset 0 1px 0 rgba(255,255,255,.18) !important; }
+  div[role="radiogroup"] label, .stTabs [data-baseweb="tab"], .st-key-nav_section button[kind^="segmented_control"] { transition:background .15s, transform .15s !important; }
+  div[role="radiogroup"] label:not(:has(input:checked)):hover, .stTabs [data-baseweb="tab"]:not([aria-selected="true"]):hover,
+  .st-key-nav_section button[kind="segmented_control"]:hover { background:rgba(43,74,138,.07) !important; transform:translateY(-1px); }
+  .st-key-nav_view { border-bottom:1px solid rgba(43,74,138,.12); }
+  .st-key-nav_view button[kind="segmented_controlActive"] {
+    background:linear-gradient(180deg, rgba(43,74,138,0), rgba(43,74,138,.07)) !important; border-bottom:2px solid #1e3a6e !important; }
+  /* dropdowns: glass pill, lift on hover, burgundy focus ring + caret */
+  [data-testid="stMain"] [data-baseweb="select"], [data-testid="stSidebar"] [data-baseweb="select"] { background:transparent !important; box-shadow:none !important; }
+  [data-baseweb="select"] > div { background:linear-gradient(180deg, rgba(255,255,255,.78), rgba(238,242,250,.62)) !important;
+    -webkit-backdrop-filter:blur(14px) saturate(170%); backdrop-filter:blur(14px) saturate(170%);
+    border:1px solid rgba(255,255,255,.9) !important; border-radius:999px !important; min-height:34px;
+    box-shadow:0 1px 2px rgba(10,36,99,.06), 0 6px 18px rgba(10,36,99,.08), inset 0 1px 0 rgba(255,255,255,.95); transition:box-shadow .18s, transform .18s; }
+  [data-baseweb="select"] > div:hover { box-shadow:0 0 0 3px rgba(10,36,99,.07), 0 8px 22px rgba(10,36,99,.14), inset 0 1px 0 rgba(255,255,255,.95); transform:translateY(-1px); }
+  [data-baseweb="select"] > div:focus-within { box-shadow:0 0 0 3px rgba(123,30,58,.16), 0 8px 22px rgba(10,36,99,.14) !important; }
+  [data-baseweb="select"] svg { fill:#7b1e3a !important; }
+  [data-baseweb="select"] > div:has([data-baseweb="tag"]) { border-radius:16px !important; padding:4px 6px !important; }
+  [data-baseweb="tag"] { height:24px !important; margin:2px 3px !important; border-radius:8px !important; }
+  [data-baseweb="popover"] [data-baseweb="menu"], [data-baseweb="popover"] ul {
+    background:rgba(255,255,255,.82) !important; -webkit-backdrop-filter:blur(18px) saturate(170%); backdrop-filter:blur(18px) saturate(170%);
+    border:1px solid rgba(255,255,255,.9) !important; border-radius:14px !important; box-shadow:0 14px 40px rgba(10,36,99,.18) !important; }
+  [data-baseweb="popover"] li:hover { background:rgba(43,74,138,.07) !important; }
+  [data-baseweb="popover"] li[aria-selected="true"] { background:rgba(123,30,58,.10) !important; }
+  /* cards and buttons */
+  div[data-testid="stExpander"] { background:#ffffff; border:1px solid #e3e7f0 !important; border-radius:14px !important; box-shadow:0 1px 3px rgba(10,36,99,.06); }
+  [data-testid="stMain"] [data-testid="stPlotlyChart"] { background:#ffffff; border:1px solid rgba(43,74,138,.10);
+    border-radius:18px; padding:6px 8px; overflow:hidden; box-shadow:0 1px 2px rgba(10,36,99,.04), 0 4px 14px rgba(30,58,110,.06), inset 0 1px 0 #ffffff;
+    transition:box-shadow .2s; }
+  [data-testid="stMain"] [data-testid="stPlotlyChart"] > div, [data-testid="stMain"] [data-testid="stPlotlyChart"] .js-plotly-plot,
+  [data-testid="stMain"] [data-testid="stPlotlyChart"] .main-svg { border-radius:16px; }
+  [data-testid="stMain"] [data-testid="stPlotlyChart"]:hover { box-shadow:0 1px 2px rgba(10,36,99,.05), 0 8px 20px rgba(30,58,110,.09), inset 0 1px 0 #ffffff; }
+  .stButton > button, .stDownloadButton > button { border-radius:999px; border:1px solid rgba(43,74,138,.18); background:linear-gradient(180deg,#ffffff,#eef2fa);
+    color:#0a2463; font-weight:600; box-shadow:0 1px 2px rgba(10,36,99,.06); transition:box-shadow .18s, transform .18s; }
+  .stButton > button:hover, .stDownloadButton > button:hover { transform:translateY(-1px); box-shadow:0 8px 20px rgba(10,36,99,.14); border-color:rgba(43,74,138,.35); color:#0a2463; }
+  /* icy tables: rounded frosted card around each HTML table, tabular figures */
+  .spotsum-wrap, .spotgrid-wrap, .expchg-wrap, .sprmat-wrap, .mx-wrap, [data-testid="stMain"] div:has(> table.oivol-tbl) {
+    border-radius:14px !important; box-shadow:0 1px 2px rgba(10,36,99,.04), 0 8px 24px rgba(10,36,99,.06) !important; }
+  .spotsum, .spotgrid, .expchg, .sprmat, .mx-tbl, .oivol-tbl { font-variant-numeric:tabular-nums; }
+</style>""", unsafe_allow_html=True)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — OI PROGRESSION
