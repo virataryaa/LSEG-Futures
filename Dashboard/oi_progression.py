@@ -1542,7 +1542,7 @@ def _stored(key, default, valid):
 
 
 with st.sidebar:
-    st.markdown("<div class='sb-brand'><div class='sb-eyebrow'>LSEG &middot; Softs Futures</div>"
+    st.markdown("<div class='sb-brand'>"
                 "<div class='sb-title'>Futures Dashboard</div>"
                 "<div class='sb-caption'>Open interest, volume and progression by contract.</div></div>",
                 unsafe_allow_html=True)
