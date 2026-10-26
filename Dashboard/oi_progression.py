@@ -1795,11 +1795,21 @@ st.markdown("""
     box-shadow:0 0 0 3px rgba(255,255,255,.95), 0 2px 6px rgba(10,36,99,.3) !important; }
   [data-testid="stSliderThumbValue"] { color:#1e3a6e !important; font-family:'Plus Jakarta Sans','Inter',sans-serif !important; font-weight:700 !important; }
   [data-testid="stSliderTickBarMin"], [data-testid="stSliderTickBarMax"] { color:#9ca3af !important; }
-  /* section heads: navy wash with a navy-to-wine marker */
-  .sec-h { display:flex; align-items:center; gap:10px; margin:16px 0 8px; padding:7px 12px; border-radius:10px;
-    background:linear-gradient(90deg, rgba(43,74,138,.09) 0%, rgba(43,74,138,.035) 55%, rgba(43,74,138,0) 100%);
-    font-family:'Plus Jakarta Sans','Inter',sans-serif; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#0a2463; }
-  .sec-h::before { content:""; width:3px; height:14px; border-radius:2px; background:linear-gradient(180deg,#2b4a8a,#7b1e3a); }
+  /* headings (### / #### and table section titles): small, centred, minimal.
+     h3 + .sec-h sit on a royal-grey wash bar that fades out at both ends; h4 is a
+     lighter sub-head between hairlines. Anchor-link icons hidden. */
+  [data-testid="stMain"] h3, .sec-h {
+    display:block !important; text-align:center !important; margin:18px 0 10px !important; padding:7px 14px !important;
+    border-radius:10px; background:linear-gradient(90deg, rgba(92,104,136,0) 0%, rgba(92,104,136,.12) 22%, rgba(92,104,136,.12) 78%, rgba(92,104,136,0) 100%);
+    font-family:'Plus Jakarta Sans','Inter',sans-serif !important; font-size:12.5px !important; font-weight:700 !important;
+    letter-spacing:.12em !important; text-transform:uppercase; color:#3b4663 !important; line-height:1.4 !important; }
+  [data-testid="stMain"] h4 {
+    display:flex !important; align-items:center; gap:12px; margin:12px 0 6px !important; padding:2px 0 !important;
+    font-family:'Plus Jakarta Sans','Inter',sans-serif !important; font-size:11px !important; font-weight:700 !important;
+    letter-spacing:.12em !important; text-transform:uppercase; color:#5a6688 !important; line-height:1.4 !important; }
+  [data-testid="stMain"] h4::before, [data-testid="stMain"] h4::after { content:""; flex:1; height:1px; background:rgba(92,104,136,.18); }
+  [data-testid="stMain"] [data-testid="stHeaderActionElements"] { display:none !important; }
+  [data-testid="stElementContainer"]:has(h3, h4, .sec-h) + [data-testid="stElementContainer"] [data-testid="stCaptionContainer"] { text-align:center; }
   /* icy All-Futures-OI tables: pale glass headers instead of solid navy, hairline rows,
      Tuesday (COT) rows tinted navy with an accent bar; the bar-chart cells keep their own colour */
   [data-testid="stMain"] .spotsum-wrap, [data-testid="stMain"] .spotgrid-wrap, [data-testid="stMain"] .expchg-wrap {
