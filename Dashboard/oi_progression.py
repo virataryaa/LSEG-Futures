@@ -2832,8 +2832,6 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
     own expensive band/quadrant/volatility computations, even though
     they're not visible. Wrapping this tab in @st.fragment confines a
     rerun triggered by one of its own widgets to just this tab."""
-    st.caption("Price = settlement of the **spot** contract — whichever unexpired month "
-              "currently has the highest OI (shifts as contracts roll).")
 
     spot_data = build_spot_oi_data(commodity, mt)
     syms_spot = spot_data["syms"]
