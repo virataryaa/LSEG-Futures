@@ -1157,7 +1157,10 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
     if not dates:
         return None
     dates_desc = sorted(dates, reverse=True)
-    syms = _syms_in_window(data, dates)
+    # Same columns, same order as the Daily Grid above so each contract sits
+    # under itself; months that expired in the window go on the far right.
+    win = _syms_in_window(data, dates)
+    syms = [x for x in win if x in data["syms"]] + [x for x in win if x not in data["syms"]]
     col_vmax = per_chg.loc[dates].abs().max()
 
     css = f"""<style>
@@ -1779,16 +1782,10 @@ st.markdown("""
   [data-testid="stHeader"] button, [data-testid="stHeader"] a, [data-testid="stToolbar"] { pointer-events:auto; }
   [data-testid="stSidebarHeader"] { height:2.2rem !important; min-height:0 !important; padding:.5rem .75rem 0 !important; }
   [data-testid="stSidebarUserContent"] { padding-top:.25rem !important; }
-  /* sidebar: navy brand card, glass controls card, navy slider thumbs */
-  .sb-brand { position:relative; overflow:hidden; border-radius:16px; padding:16px 16px 14px; margin:0 0 4px;
-    background:linear-gradient(145deg, #0a2463 0%, #1e3a6e 55%, #2b4a8a 100%);
-    box-shadow:0 10px 26px rgba(10,36,99,.28), inset 0 1px 0 rgba(255,255,255,.14); }
-  .sb-brand::after { content:""; position:absolute; top:-45%; right:-30%; width:75%; height:130%; pointer-events:none;
-    background:radial-gradient(circle, rgba(255,255,255,.18), rgba(255,255,255,0) 65%); }
-  .sb-eyebrow { font-family:'Plus Jakarta Sans','Inter',sans-serif; font-size:9.5px; font-weight:700; letter-spacing:.18em;
-    text-transform:uppercase; color:rgba(255,255,255,.62); margin-bottom:6px; }
-  .sb-brand .sb-title { font-size:1.42rem !important; font-weight:600; color:#ffffff !important; line-height:1.15; margin:0 0 5px; }
-  .sb-brand .sb-caption { font-size:11px; color:rgba(255,255,255,.74); line-height:1.4; }
+  /* sidebar: plain title block, glass controls card, navy slider thumbs */
+  .sb-brand { padding:4px 4px 12px; margin:0 0 8px; border-bottom:1px solid rgba(43,74,138,.12); }
+  .sb-brand .sb-title { font-size:1.42rem !important; font-weight:600; color:#0a2463 !important; line-height:1.15; margin:0 0 4px; }
+  .sb-brand .sb-caption { font-size:11px; color:#7a86a8; line-height:1.4; }
   .st-key-sb_controls { background:rgba(255,255,255,.55); border:1px solid rgba(255,255,255,.95); border-radius:16px; padding:12px 12px 6px;
     box-shadow:0 1px 2px rgba(10,36,99,.05), 0 8px 24px rgba(10,36,99,.07), inset 0 1px 0 #ffffff; }
   [data-testid="stSidebar"] [data-testid="stSlider"] [role="slider"] { background:linear-gradient(180deg,#2b4a8a,#1e3a6e) !important;
@@ -1827,6 +1824,14 @@ st.markdown("""
     background:rgba(43,74,138,.06) !important; }
   [data-testid="stMain"] tr.tue-row td:first-child { background:#edf1f9 !important;
     box-shadow:inset 3px 0 0 #2b4a8a, inset -1px 0 0 0 rgba(43,74,138,.12) !important; }
+  /* column lock: summary, Daily Grid and per-expiry tables share fixed date + contract widths
+     and type size, so a contract's column sits directly under the same contract above */
+  [data-testid="stMain"] table.expchg { font-size:.6rem !important; }
+  [data-testid="stMain"] table.expchg th { font-size:.54rem !important; }
+  [data-testid="stMain"] table.spotsum .lbl, [data-testid="stMain"] table.spotgrid .date-cell, [data-testid="stMain"] table.expchg .date-cell {
+    box-sizing:border-box; width:86px !important; min-width:86px !important; max-width:86px !important; }
+  [data-testid="stMain"] table.spotsum .ccol, [data-testid="stMain"] table.spotgrid .ccol, [data-testid="stMain"] table.expchg .ccol {
+    box-sizing:border-box; width:60px !important; min-width:60px !important; max-width:60px !important; }
   [data-testid="stMain"] table.spotsum tbody tr:hover td, [data-testid="stMain"] table.spotgrid tbody tr:hover td,
   [data-testid="stMain"] table.expchg tbody tr:hover td { background-color:rgba(43,74,138,.08); }
 </style>""", unsafe_allow_html=True)
