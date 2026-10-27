@@ -1615,8 +1615,13 @@ with st.sidebar:
         dte_opts_rev = list(range(max_dte_r, -1, -10))
         _dte_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
                              and r[0] in dte_opts_rev and r[1] in dte_opts_rev)
-        default_upper = 300 if 300 in dte_opts_rev else dte_opts_rev[0]
-        _dk = f"sb_dte_{commodity}_{selected_month}"
+        # A far-dated contract (e.g. next year's) has more days left than the
+        # 300/150 defaults show, so start the window at its own current DTE.
+        _curr_dte = df_month.loc[df_month["ice_symbol"] == current_contract, "days_to_expiry"].min()
+        _curr_dte_r = min(max_dte_r, -(-int(_curr_dte) // 10) * 10) if pd.notna(_curr_dte) else 0
+        _up = lambda d: max(d, _curr_dte_r) if max(d, _curr_dte_r) in dte_opts_rev else dte_opts_rev[0]
+        default_upper = _up(300)
+        _dk = f"sb_dte_{commodity}_{selected_month}_{current_contract}"
         if "dte" in _show:
             _seed(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
             dte_sel = st.select_slider("Days to Expiry Range (Raw)", options=dte_opts_rev, key=_dk)
@@ -1624,8 +1629,8 @@ with st.sidebar:
             dte_sel = _stored(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
         dte_range    = [dte_sel[0], dte_sel[1]]   # [high DTE, low DTE] — chart is reversed
 
-        default_norm_upper = 150 if 150 in dte_opts_rev else dte_opts_rev[0]
-        _nk = f"sb_norm_{commodity}_{selected_month}"
+        default_norm_upper = _up(150)
+        _nk = f"sb_norm_{commodity}_{selected_month}_{current_contract}"
         if "norm" in _show:
             _seed(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
             norm_dte_sel = st.select_slider("Days to Expiry Range (Normalized)",
