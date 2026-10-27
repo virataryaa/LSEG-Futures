@@ -1618,7 +1618,8 @@ with st.sidebar:
         # A far-dated contract (e.g. next year's) has more days left than the
         # 300/150 defaults show, so start the window at its own current DTE.
         _curr_dte = df_month.loc[df_month["ice_symbol"] == current_contract, "days_to_expiry"].min()
-        _curr_dte_r = min(max_dte_r, -(-int(_curr_dte) // 10) * 10) if pd.notna(_curr_dte) else 0
+        # +60d of headroom so the line doesn't start flush against the left edge
+        _curr_dte_r = min(max_dte_r, -(-int(_curr_dte) // 10) * 10 + 60) if pd.notna(_curr_dte) else 0
         _up = lambda d: max(d, _curr_dte_r) if max(d, _curr_dte_r) in dte_opts_rev else dte_opts_rev[0]
         default_upper = _up(300)
         _dk = f"sb_dte_{commodity}_{selected_month}_{current_contract}"
