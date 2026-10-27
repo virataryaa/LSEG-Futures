@@ -1621,33 +1621,32 @@ with st.sidebar:
             hist_range = (0, 0)
 
         max_dte      = int(df_month["days_to_expiry"].max())
-        max_dte_r    = (max_dte // 10) * 10
-        dte_opts_rev = list(range(max_dte_r, -1, -10))
+        max_dte_r    = -(-max_dte // 10) * 10
+        # Plain numeric sliders (low, high): a select_slider over ~100 reversed
+        # options dragged stickily. The charts still plot high DTE on the left.
         _dte_ok = lambda r: (isinstance(r, (tuple, list)) and len(r) == 2
-                             and r[0] in dte_opts_rev and r[1] in dte_opts_rev)
+                             and 0 <= r[0] <= r[1] <= max_dte_r)
         # A far-dated contract (e.g. next year's) has more days left than the
         # 300/150 defaults show, so open the window at the full range instead.
         _curr_dte = df_month.loc[df_month["ice_symbol"] == current_contract, "days_to_expiry"].min()
         _far = pd.notna(_curr_dte)
-        _up = lambda d: dte_opts_rev[0] if (_far and _curr_dte > d) or d not in dte_opts_rev else d
-        default_upper = _up(300)
+        _up = lambda d: max_dte_r if (_far and _curr_dte > d) or d > max_dte_r else d
         _dk = f"sb_dte_{commodity}_{selected_month}_{current_contract}"
         if "dte" in _show:
-            _seed(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
-            dte_sel = st.select_slider("Days to Expiry Range (Raw)", options=dte_opts_rev, key=_dk)
+            _seed(_dk, (0, _up(300)), _dte_ok)
+            dte_sel = st.slider("Days to Expiry Range (Raw)", 0, max_dte_r, step=10, key=_dk)
         else:
-            dte_sel = _stored(_dk, (default_upper, dte_opts_rev[-1]), _dte_ok)
-        dte_range    = [dte_sel[0], dte_sel[1]]   # [high DTE, low DTE] — chart is reversed
+            dte_sel = _stored(_dk, (0, _up(300)), _dte_ok)
+        dte_range    = [dte_sel[1], dte_sel[0]]   # [high DTE, low DTE] — chart is reversed
 
-        default_norm_upper = _up(150)
         _nk = f"sb_norm_{commodity}_{selected_month}_{current_contract}"
         if "norm" in _show:
-            _seed(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
-            norm_dte_sel = st.select_slider("Days to Expiry Range (Normalized)",
-                                            options=dte_opts_rev, key=_nk)
+            _seed(_nk, (0, _up(150)), _dte_ok)
+            norm_dte_sel = st.slider("Days to Expiry Range (Normalized)", 0, max_dte_r,
+                                     step=10, key=_nk)
         else:
-            norm_dte_sel = _stored(_nk, (default_norm_upper, dte_opts_rev[-1]), _dte_ok)
-        norm_dte_range = [norm_dte_sel[0], norm_dte_sel[1]]
+            norm_dte_sel = _stored(_nk, (0, _up(150)), _dte_ok)
+        norm_dte_range = [norm_dte_sel[1], norm_dte_sel[0]]
 
         if "indiv" in _show:
             _seed("sb_indiv", False, lambda b: isinstance(b, bool))
