@@ -53,7 +53,7 @@ def _check_password() -> bool:
     except Exception:
         pass
     typed = st.session_state.get("_pw_input") or ""
-    ok = bool(real) and typed == real
+    ok = bool(real) and hmac.compare_digest(typed.encode(), real.encode())
 
     def _sig(exp):
         return hmac.new(real.encode(), f"v1|{exp}".encode(), hashlib.sha256).hexdigest()
@@ -370,7 +370,6 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
     return band, curr_df, dte_max, current_reached, hist_norm
 
 
-@st.cache_data(max_entries=200, show_spinner=False)
 def _rolling_vol_share(g, roll_n):
     """N-day volume share for one contract (rows sorted by Date): summed
     contract volume over summed market volume, so a quiet day isn't weighted
@@ -380,6 +379,7 @@ def _rolling_vol_share(g, roll_n):
     return num / den.where(den > 0) * 100
 
 
+@st.cache_data(max_entries=200, show_spinner=False)
 def compute_band(commodity, month, hist_year_range, metric_col,
                  roll_n=None, use_enriched=False, mtime=0.0):
     """
