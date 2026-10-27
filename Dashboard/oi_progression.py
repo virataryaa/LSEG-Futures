@@ -371,6 +371,15 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
 
 
 @st.cache_data(max_entries=200, show_spinner=False)
+def _rolling_vol_share(g, roll_n):
+    """N-day volume share for one contract (rows sorted by Date): summed
+    contract volume over summed market volume, so a quiet day isn't weighted
+    the same as a busy one the way averaging daily shares would."""
+    num = g["volume"].rolling(roll_n, min_periods=1).sum()
+    den = g["total_vol"].rolling(roll_n, min_periods=1).sum()
+    return num / den.where(den > 0) * 100
+
+
 def compute_band(commodity, month, hist_year_range, metric_col,
                  roll_n=None, use_enriched=False, mtime=0.0):
     """
@@ -394,7 +403,8 @@ def compute_band(commodity, month, hist_year_range, metric_col,
         pieces = []
         for sym, grp in dm.groupby("ice_symbol"):
             g = grp.sort_values("Date").copy()
-            g["_metric"] = g["volume"].rolling(roll_n, min_periods=1).mean()
+            g["_metric"] = (_rolling_vol_share(g, roll_n) if metric_col == "vol_share_pct"
+                            else g["volume"].rolling(roll_n, min_periods=1).mean())
             pieces.append(g)
         dm = pd.concat(pieces)
         metric_col = "_metric"
@@ -2426,14 +2436,16 @@ def _view_vol():
 
     # ── Chart 1: Volume Market Share ──────────────────────────────────────────
     st.markdown("#### Volume Market Share (%)")
-    st.caption("Contract daily volume as % of total commodity volume on that date.")
+    st.caption(f"Contract volume as % of total commodity volume, summed over a rolling {roll_n}-day window.")
 
-    res_vs = compute_band(commodity, selected_month, hist_range, "vol_share_pct", use_enriched=True, mtime=mt)
+    res_vs = compute_band(commodity, selected_month, hist_range, "vol_share_pct",
+                          roll_n=roll_n, use_enriched=True, mtime=mt)
     if res_vs:
         b_vs = res_vs[0]
         c_vs  = df_enr[df_enr["ice_symbol"] == current_contract].sort_values("Date").copy()
+        c_vs["_metric"] = _rolling_vol_share(c_vs, roll_n)
         lat   = c_vs.iloc[-1]
-        v_now = lat["vol_share_pct"]
+        v_now = lat["_metric"]
         d_now = int(lat["days_to_expiry"])
         idx_  = (b_vs["days_to_expiry"] - d_now).abs().idxmin()
         avg_  = b_vs.loc[idx_, "hist_mean"]
@@ -2445,8 +2457,8 @@ def _view_vol():
             ("vs Hist Mean",   f"{avg_:.1f}%", f"{v_now-avg_:+.1f}pp"),
         ])
 
-        fig_vs = build_chart(b_vs, c_vs, "vol_share_pct", current_contract,
-            title=f"<b>{commodity} {month_name}</b>  |  Volume Market Share",
+        fig_vs = build_chart(b_vs, c_vs, "_metric", current_contract,
+            title=f"<b>{commodity} {month_name}</b>  |  Volume Market Share ({roll_n}d)",
             y_title="Share of Total Volume", y_fmt=".1f", y_suffix="%",
             outer_color=C["vs_outer"], inner_color=C["vs_inner"], avg_color=C["vs_avg"],
             dte_range=dte_range, dte_now=d_now, height=460)
