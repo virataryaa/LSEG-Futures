@@ -10,6 +10,12 @@ frame. Deliberately thin: data access and constants only, no Streamlit UI.
 import streamlit as st
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+import plotly.io as pio
+
+# No vertical gridlines on any chart in either app (horizontal ones stay)
+pio.templates["no_x_grid"] = go.layout.Template(layout=dict(xaxis=dict(showgrid=False)))
+pio.templates.default = "plotly+no_x_grid"
 from pathlib import Path
 
 # Delivery-month codes in calendar order. Needed by the seasonals page to work

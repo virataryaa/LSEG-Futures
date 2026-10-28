@@ -445,7 +445,7 @@ def _dte_axis_style(ltd, dte_range, n_target=10):
     LTD it keeps the styling and leaves Plotly's plain DTE ticks."""
     style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
                  ticks="outside", ticklen=3, tickcolor="rgba(10,36,99,0.25)",
-                 showgrid=True, gridcolor="rgba(10,36,99,0.05)", zeroline=False,
+                 showgrid=False, gridcolor="rgba(10,36,99,0.05)", zeroline=False,
                  title=None, tickangle=0, tickfont=dict(size=9, color="#9ca3af"))
     if ltd is None or pd.isna(ltd):
         return style
@@ -2353,7 +2353,7 @@ def _view_total_oi():
         fig_ts.update_layout(
             height=500, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
             font=dict(color=C["font"], family="Inter, sans-serif"),
-            xaxis=dict(tickformat="%b", dtick="M1", hoverformat="%d %b", showgrid=True,
+            xaxis=dict(tickformat="%b", dtick="M1", hoverformat="%d %b", showgrid=False,
                        gridcolor=C["grid"], range=[_x0, _x0 + pd.Timedelta(days=365)],
                        zeroline=False, tickfont=dict(size=11, color=C["font"])),
             yaxis=dict(title="Total Open Interest (contracts)", tickformat=",.0f",
@@ -2394,7 +2394,7 @@ def _view_total_oi():
         fig_hist.update_layout(
             height=420, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
             font=dict(color=C["font"], family="Inter, sans-serif"),
-            xaxis=dict(showgrid=True, gridcolor=C["grid"], zeroline=False,
+            xaxis=dict(showgrid=False, gridcolor=C["grid"], zeroline=False,
                        tickfont=dict(size=11, color=C["font"])),
             yaxis=dict(title="Total Open Interest (contracts)", tickformat=",.0f",
                        showgrid=True, gridcolor=C["grid"], zeroline=False,
@@ -2620,7 +2620,7 @@ def _view_vol_board():
         fig_allvol.update_layout(
             title=dict(text=f"<b>{commodity}</b>  |  Rolling {roll_n}-Day Volume — All Contracts",
                        font=dict(size=16, color=C["font"]), x=0.01),
-            xaxis=dict(title="Date", showgrid=True, gridcolor=C["grid"],
+            xaxis=dict(title="Date", showgrid=False, gridcolor=C["grid"],
                       tickfont=dict(size=11, color=C["font"]),
                       rangebreaks=rangebreaks),
             yaxis=dict(title=f"{roll_n}-Day Avg Volume (contracts)", showgrid=True,
@@ -2653,7 +2653,7 @@ def _view_vol_board():
                 barmode="stack",
                 title=dict(text=f"<b>{commodity}</b>  |  Rolling Volume Mix (%)",
                            font=dict(size=16, color=C["font"]), x=0.01),
-                xaxis=dict(title="Date", showgrid=True, gridcolor=C["grid"],
+                xaxis=dict(title="Date", showgrid=False, gridcolor=C["grid"],
                           tickfont=dict(size=11, color=C["font"]),
                           rangebreaks=rangebreaks),
                 yaxis=dict(title="Share of Rolling Volume", range=[0, 100], ticksuffix="%",
@@ -2678,7 +2678,7 @@ def _view_vol_board():
                 barmode="stack",
                 title=dict(text=f"<b>{commodity}</b>  |  Total Rolling Volume (stacked)",
                            font=dict(size=16, color=C["font"]), x=0.01),
-                xaxis=dict(title="Date", showgrid=True, gridcolor=C["grid"],
+                xaxis=dict(title="Date", showgrid=False, gridcolor=C["grid"],
                           tickfont=dict(size=11, color=C["font"]),
                           rangebreaks=rangebreaks),
                 yaxis=dict(title=f"{roll_n}-Day Avg Volume (contracts)", showgrid=True,
@@ -2762,7 +2762,7 @@ def _view_flow():
                        bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
             hovermode="x unified", height=640, margin=dict(l=70, r=30, t=60, b=80),
         )
-        fig_flow.update_xaxes(showgrid=True, gridcolor=C["grid"], rangebreaks=rangebreaks_f,
+        fig_flow.update_xaxes(showgrid=False, gridcolor=C["grid"], rangebreaks=rangebreaks_f,
                               tickfont=dict(size=11, color=C["font"]))
         fig_flow.update_xaxes(title_text="Date", row=2, col=1)
         fig_flow.update_yaxes(title_text="OI Change (contracts)", showgrid=True, gridcolor=C["grid"],
@@ -2876,7 +2876,7 @@ def _view_flow():
                 height=440, plot_bgcolor=C["bg"], paper_bgcolor=C["bg"],
                 font=dict(color=C["font"], family="Inter, sans-serif"),
                 margin=dict(l=70, r=30, t=45, b=60),
-                xaxis=dict(title=f"Volume (contracts{ma_sfx})", showgrid=True, gridcolor=C["grid"],
+                xaxis=dict(title=f"Volume (contracts{ma_sfx})", showgrid=False, gridcolor=C["grid"],
                           tickfont=dict(size=11, color=C["font"])),
                 yaxis=dict(title=("OI Change" if oi_chg_mode == "Signed" else "|OI Change|")
                                  + f" (contracts{ma_sfx})",

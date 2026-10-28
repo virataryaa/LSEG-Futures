@@ -626,7 +626,7 @@ def _dte_axis_style(ltd, dte_range, n_target=20):
     the styling and leaves Plotly's plain DTE ticks."""
     style = dict(showline=True, linecolor="rgba(10,36,99,0.25)", linewidth=1,
                  ticks="outside", ticklen=3, tickcolor="rgba(10,36,99,0.25)",
-                 showgrid=True, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
+                 showgrid=False, gridcolor="rgba(10,36,99,0.04)", zeroline=False,
                  title=None, tickfont=dict(size=9, color="#9ca3af"))
     if ltd is None or pd.isna(ltd):
         return style
