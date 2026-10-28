@@ -332,8 +332,12 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
         dm["year"].between(hist_year_range[0], hist_year_range[1])
     ]["ice_symbol"].unique().tolist())
 
+    # still-live contracts expiring before current_sym (e.g. CCZ6 when viewing CCZ7):
+    # normalised for the individual-years overlay only, never fed into the band
+    live_prior = active_syms[:active_syms.index(current_sym)] if current_sym in active_syms else []
+
     divisors = {}
-    for sym in hist_syms_range + [current_sym]:
+    for sym in hist_syms_range + live_prior + [current_sym]:
         g = (dm.loc[dm["ice_symbol"] == sym, ["days_to_expiry", "open_interest"]]
              .drop_duplicates("days_to_expiry")
              .set_index("days_to_expiry")
@@ -350,8 +354,10 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
     if not hist_syms_ok:
         return None
 
+    live_ok = [s for s in live_prior if divisors.get(s, 0) > 0]
+
     dm = dm.copy()
-    for s in hist_syms_ok:
+    for s in hist_syms_ok + live_ok:
         mask = dm["ice_symbol"] == s
         dm.loc[mask, "open_interest"] = dm.loc[mask, "open_interest"] / divisors[s] * 100
 
@@ -364,8 +370,9 @@ def _normalize_oi_at_dte_max(commodity, month, hist_year_range, current_sym, mti
 
     band = _band_from_norm(dm, hist_syms_ok, hist_year_range)
     hist_norm = dm[
-        dm["ice_symbol"].isin(hist_syms_ok) &
-        dm["year"].between(hist_year_range[0], hist_year_range[1])
+        (dm["ice_symbol"].isin(hist_syms_ok) &
+         dm["year"].between(hist_year_range[0], hist_year_range[1]))
+        | dm["ice_symbol"].isin(live_ok)
     ].copy()
     return band, curr_df, dte_max, current_reached, hist_norm
 
@@ -1903,7 +1910,11 @@ def _view_oi():
     if show_individual:
         _yr_of = (df_month[df_month["ice_symbol"].isin(hist_syms)]
                   .groupby("ice_symbol")["year"].first().astype(int))
-        _yr_of = _yr_of[(_yr_of >= hist_range[0]) & (_yr_of <= hist_range[1])].sort_values(ascending=False)
+        _yr_of = _yr_of[(_yr_of >= hist_range[0]) & (_yr_of <= hist_range[1])]
+        # still-live contracts expiring before the current one (e.g. CCZ6 when viewing CCZ7)
+        _live = active_syms[:active_syms.index(current_contract)]
+        _yr_of = pd.concat([_yr_of, df_month[df_month["ice_symbol"].isin(_live)]
+                            .groupby("ice_symbol")["year"].first().astype(int)]).sort_values(ascending=False)
         _opts = list(_yr_of.index)
         ind_syms = st.multiselect(
             "Individual years", _opts, default=_opts,
