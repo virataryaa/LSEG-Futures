@@ -205,7 +205,9 @@ def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
                & lseg.reindex(tot_oi.index).isna()] = np.nan
     else:
         tot_oi[tot_oi.index < df.groupby("ice_symbol")["LTD"].first().min()] = np.nan
+    # No LSEG market-volume total is stored, so pre-board dates have no full total
     tot_vol = df.groupby("Date")["volume"].sum().rename("total_vol")
+    tot_vol[tot_vol.index < df.groupby("ice_symbol")["LTD"].first().min()] = np.nan
     df = df.merge(tot_oi, on="Date").merge(tot_vol, on="Date")
     df["oi_share_pct"] = df["open_interest"] / df["total_oi"]  * 100
     df["vol_share_pct"]= df["volume"]        / df["total_vol"] * 100

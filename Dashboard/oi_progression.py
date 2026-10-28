@@ -386,7 +386,7 @@ def _rolling_vol_share(g, roll_n):
     """N-day volume share for one contract (rows sorted by Date): summed
     contract volume over summed market volume, so a quiet day isn't weighted
     the same as a busy one the way averaging daily shares would."""
-    num = g["volume"].rolling(roll_n, min_periods=1).sum()
+    num = g["volume"].where(g["total_vol"].notna()).rolling(roll_n, min_periods=1).sum()
     den = g["total_vol"].rolling(roll_n, min_periods=1).sum()
     return num / den.where(den > 0) * 100
 
@@ -921,7 +921,7 @@ def _syms_in_window(data: dict, dates) -> list:
 def _table_syms(data: dict, dates, include_expired: bool = False) -> list:
     """Columns for the All Futures OI tables -- one rule for all three so each
     contract sits directly under itself. Active months always; months that
-    expired inside the window only when asked (the user changed the lookback),
+    expired inside the window only when asked ("Include expired months"),
     and then on the far right so the active columns keep their place."""
     win = _syms_in_window(data, dates)
     active = [x for x in win if x in data["syms"]]
@@ -2506,7 +2506,7 @@ def _view_vol():
         v_now = lat["_metric"]
         d_now = int(lat["days_to_expiry"])
         idx_  = (b_vs["days_to_expiry"] - d_now).abs().idxmin()
-        avg_  = b_vs.loc[idx_, "hist_mean"]
+        avg_  = b_vs.loc[idx_, "hist_mean_raw"]
 
         kpi_row([
             ("Contract",       current_contract),
@@ -2541,7 +2541,7 @@ def _view_vol():
         v_now = lat["_metric"]
         d_now = int(lat["days_to_expiry"])
         idx_  = (b_rv["days_to_expiry"] - d_now).abs().idxmin()
-        avg_  = b_rv.loc[idx_, "hist_mean"]
+        avg_  = b_rv.loc[idx_, "hist_mean_raw"]
 
         # Guarded like the OI KPI in Tab 1: a historical mean of 0 (a contract
         # that simply did not trade around this DTE) otherwise renders "inf%".
@@ -2800,6 +2800,11 @@ def _view_flow():
             sc_full = (df_all_flow.groupby("Date")
                        .agg(volume=("volume", "sum"), open_interest=("open_interest", "sum"))
                        .sort_index())
+            # LSEG's market total where stored: the per-contract sum is short of the
+            # board on its early dates and its day-over-day change spikes there
+            _tot = load_total_oi(commodity, _total_oi_mtime())
+            if _tot is not None:
+                sc_full["open_interest"] = _tot.reindex(sc_full.index).fillna(sc_full["open_interest"])
             sc_full["oi_change"] = sc_full["open_interest"].diff()
             sc_full = sc_full.dropna(subset=["oi_change"]).reset_index()
             sc_label = f"All {commodity} futures combined"
@@ -2825,6 +2830,7 @@ def _view_flow():
             sc_label += "  —  5-day MA"
 
         sc_win = sc_full[sc_full["Date"] >= cutoff_flow] if cutoff_flow is not None else sc_full
+        sc_win = sc_win.dropna(subset=["volume", "oi_change"])   # one missing print breaks polyfit
 
         ma_sfx    = " , 5d MA" if smooth_mode == "5-day MA" else ""
         x_scatter = sc_win["volume"]
@@ -2946,9 +2952,10 @@ def _render_all_futures_oi_recap(commodity: str, mt: float):
             with c0:
                 spot_lookback = st.number_input("Lookback (calendar days)", min_value=30, max_value=730,
                                                 value=90, step=10, key="recap_table_lookback")
-                # Expired months only join the tables once the lookback is picked
-                # by hand; the default view is the live curve.
-                show_expired = spot_lookback != 90
+                # The default view is the live curve; expired months join on request
+                # (this used to switch on silently whenever the lookback left 90).
+                show_expired = st.checkbox("Include expired months", value=False,
+                                           key="recap_show_expired")
             with c1:
                 spot_label = f"Spot (Most OI: {latest_spot_sym})" if latest_spot_sym else "Spot (Most OI)"
                 price_opts = [spot_label] + syms_spot
