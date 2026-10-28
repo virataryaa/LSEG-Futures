@@ -463,6 +463,9 @@ def _dte_axis_style(ltd, dte_range, n_target=10):
 
 
 # ── Generic chart builder ─────────────────────────────────────────────────────
+_IND_PALETTE = ["#e8590c", "#2f9e44", "#7048e8", "#1971c2", "#c2255c", "#0c8599"]
+
+
 def build_chart(band, curr_df, metric_col, current_sym,
                 title, y_title, y_fmt, y_suffix,
                 outer_color, inner_color, avg_color,
@@ -506,10 +509,15 @@ def build_chart(band, curr_df, metric_col, current_sym,
 
     # Individual years
     if show_individual and hist_df is not None and ind_metric:
-        for sym, grp in hist_df.groupby("ice_symbol"):
+        # a handful of picked years each get their own colour; more than that stay grey
+        groups = list(hist_df.groupby("ice_symbol"))
+        few = len(groups) <= len(_IND_PALETTE)
+        for i, (sym, grp) in enumerate(groups):
             grp = grp.sort_values("days_to_expiry")
+            line = (dict(width=1.6, color=_IND_PALETTE[i]) if few
+                    else dict(width=0.9, color=C["individual"]))
             fig.add_trace(go.Scatter(x=grp["days_to_expiry"], y=grp[ind_metric],
-                mode="lines", line=dict(width=0.9, color=C["individual"]),
+                mode="lines", line=line,
                 name=sym, showlegend=True,
                 hovertemplate=f"{sym} DTE:%{{x}} %{{y:{y_fmt}}}<extra></extra>"))
 
