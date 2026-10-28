@@ -159,7 +159,7 @@ def _densify_by_dte(hist_df, metric_col):
 @st.cache_data(max_entries=200, show_spinner=False)
 def _compute_dte_max(commodity, month, hist_year_range, mtime=0.0):
     """DTE_max: for each historical year, find the days-to-expiry where that
-    year's OI peaked, then average those DTEs across years. This is a single
+    year's OI peaked, then take the median of those DTEs across years. This is a single
     reference day-to-expiry ('OI typically peaks here'), not a divisor."""
     df = load_data(commodity, mtime)
     dm = df[df["month"] == month].copy()
@@ -171,7 +171,9 @@ def _compute_dte_max(commodity, month, hist_year_range, mtime=0.0):
     if hist.empty:
         return None
     peak_dtes = hist.loc[hist.groupby("ice_symbol")["open_interest"].idxmax(), "days_to_expiry"]
-    return int(round(peak_dtes.mean()))
+    # median, not mean: one year peaking far out (LCC 221d vs a 76d median)
+    # would otherwise drag the reference day for every curve
+    return int(round(peak_dtes.median()))
 
 
 def _hist_band(dense_df: pd.DataFrame, metric_col: str, x: str = "days_to_expiry") -> pd.DataFrame:
@@ -184,7 +186,10 @@ def _hist_band(dense_df: pd.DataFrame, metric_col: str, x: str = "days_to_expiry
     this was the single biggest cost in a cold commodity switch (~5s of a
     ~10s total in profiling, from ~23k quantile calls)."""
     g = dense_df.groupby(x)[metric_col]
-    band = g.agg(hist_min="min", hist_max="max", hist_mean="mean").reset_index()
+    # hist_mean_raw: unsmoothed, for KPI comparisons against a raw daily value;
+    # n: how many years sit behind each point (thins out at long DTE)
+    band = g.agg(hist_min="min", hist_max="max", hist_mean="mean", n="count").reset_index()
+    band["hist_mean_raw"] = band["hist_mean"]
     q25 = g.quantile(0.25).rename("hist_q25").reset_index()
     q75 = g.quantile(0.75).rename("hist_q75").reset_index()
     q10 = g.quantile(0.10).rename("hist_q10").reset_index()
@@ -421,6 +426,8 @@ def compute_band(commodity, month, hist_year_range, metric_col,
         dm["year"].between(hist_year_range[0], hist_year_range[1])
     ]
 
+    if hist_df.empty or hist_df[metric_col].notna().sum() == 0:
+        return None   # no expired history in range: callers show "no data" instead of crashing
     hist_dense = _densify_by_dte(hist_df, metric_col)
     band = _hist_band(hist_dense, metric_col)
 
@@ -466,6 +473,15 @@ def _dte_axis_style(ltd, dte_range, n_target=10):
 _IND_PALETTE = ["#e8590c", "#2f9e44", "#7048e8", "#1971c2", "#c2255c", "#0c8599"]
 
 
+def _trim_band(band):
+    """At long DTE only the few years whose history reaches that far remain, and
+    a "band" of one or two years is just those lines. Drop points backed by
+    fewer than 3 years (or keep all when fewer than 3 were selected)."""
+    if "n" not in band or band.empty:
+        return band
+    return band[band["n"] >= min(3, int(band["n"].max()))]
+
+
 def build_chart(band, curr_df, metric_col, current_sym,
                 title, y_title, y_fmt, y_suffix,
                 outer_color, inner_color, avg_color,
@@ -476,6 +492,8 @@ def build_chart(band, curr_df, metric_col, current_sym,
         ltd = curr_df["LTD"].iloc[0]
     fig = go.Figure()
     mid_color = C['oi_mid']   # all metric families share the Cotton teal bands
+
+    band = _trim_band(band)
 
     # Outer band
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_max"],
@@ -504,8 +522,9 @@ def build_chart(band, curr_df, metric_col, current_sym,
     # Mean line
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_mean"],
         mode="lines", line=dict(color=avg_color, width=1.5, dash="dot"),
-        name="Historical Mean",
-        hovertemplate=f"DTE: %{{x}}<br>Mean: %{{y:{y_fmt}}}{y_suffix}<extra>Mean</extra>"))
+        name="Historical Mean", customdata=band["n"] if "n" in band else None,
+        hovertemplate=(f"DTE: %{{x}}<br>Mean: %{{y:{y_fmt}}}{y_suffix}"
+                       + ("  (%{customdata} yrs)" if "n" in band else "") + "<extra>Mean</extra>")))
 
     # Individual years
     if show_individual and hist_df is not None and ind_metric:
@@ -591,6 +610,7 @@ def kpi_row(vals: list):
 def add_oi_traces(fig, band, curr_df, current_sym, oi_fmt,
                   show_individual=False, hist_df=None, row=None, col=None, show_legend=True):
     kw = dict(row=row, col=col) if row else {}
+    band = _trim_band(band)
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_max"],
         mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"), **kw)
     fig.add_trace(go.Scatter(x=band["days_to_expiry"], y=band["hist_min"],
@@ -1888,8 +1908,8 @@ st.markdown("""
 def _view_oi():
     res = compute_band(commodity, selected_month, hist_range, "open_interest", mtime=mt)
     if res is None:
-        st.error("No data available.")
-        st.stop()
+        st.info("No expired contracts for this month in the selected historical years, so there is no band to compare against.")
+        return
 
     band = res[0]
     curr_df = df_month[df_month["ice_symbol"] == current_contract].sort_values("Date").copy()
@@ -1900,7 +1920,7 @@ def _view_oi():
     lat_date   = latest["Date"].strftime("%b %d, %Y")
 
     closest    = (band["days_to_expiry"] - dte_now).abs().idxmin()
-    avg_oi     = band.loc[closest, "hist_mean"]
+    avg_oi     = band.loc[closest, "hist_mean_raw"]
     pct_vs_avg = (latest_oi - avg_oi) / avg_oi * 100 if avg_oi > 0 else 0.0
 
     month_name = MONTH_NAMES.get(selected_month, selected_month)
@@ -1946,7 +1966,7 @@ def _view_oi():
         lat_sh = c_sh.iloc[-1]
         dte_sh = int(lat_sh["days_to_expiry"])
         val_sh = lat_sh["oi_share_pct"]
-        avg_sh = b_sh.loc[(b_sh["days_to_expiry"] - dte_sh).abs().idxmin(), "hist_mean"]
+        avg_sh = b_sh.loc[(b_sh["days_to_expiry"] - dte_sh).abs().idxmin(), "hist_mean_raw"]
 
     col_raw, col_share = st.columns(2)
     with col_raw:
@@ -1973,7 +1993,7 @@ def _view_oi():
                 show_individual=show_individual, ind_metric="oi_share_pct",
                 hist_df=df_enr[df_enr["ice_symbol"].isin(ind_syms)] if show_individual else None)
             st.plotly_chart(fig_sh, use_container_width=True)
-            st.caption(f"Share of all active contracts' OI: {val_sh:.1f}% vs hist mean "
+            st.caption(f"Share of LSEG total market OI: {val_sh:.1f}% vs hist mean "
                        f"{avg_sh:.1f}% ({val_sh-avg_sh:+.1f}pp).")
 
     # ── Normalized OI (full width, below Raw + Share) ──────────────────────────
@@ -1992,12 +2012,12 @@ def _view_oi():
             height=520, ltd=curr_df["LTD"].iloc[0],
         )
         st.plotly_chart(fig_n2, use_container_width=True)
-        note = f"DTE_max={dte_max}: avg DTE of each year's OI peak."
+        note = f"DTE_max={dte_max}: median DTE of each year's OI peak."
         if not current_reached:
             note += f" {current_contract} at {dte_now} DTE — no line yet."
         st.caption(
             note,
-            help="DTE_max is the average, across the selected historical years, of the day-to-expiry "
+            help="DTE_max is the median, across the selected historical years, of the day-to-expiry "
                  "each year's OI hit its own high; every year's OI curve is then divided by that same "
                  "year's own OI reading on that DTE_max day (not its own peak) and shown as a %. "
                  "The current contract only appears once it has counted down to DTE_max.",
@@ -2015,7 +2035,15 @@ def _view_oi():
 
     quad_results = []  # (sym, month, band, curr_df)
     for sym_q, m_q in zip(quad_syms, quad_months):
-        res_q = compute_band(commodity, m_q, hist_range, "open_interest", mtime=mt)
+        # each panel bands against its own month's full expired history; the
+        # sidebar's year range belongs to the selected month and may not fit others
+        _, hist_q = _split_contracts(df_all[df_all["month"] == m_q])
+        yrs_q = df_all.loc[df_all["ice_symbol"].isin(hist_q), "year"]
+        if yrs_q.empty:
+            quad_results.append((sym_q, m_q, None, None))
+            continue
+        res_q = compute_band(commodity, m_q, (int(yrs_q.min()), int(yrs_q.max())),
+                             "open_interest", mtime=mt)
         if res_q is None:
             quad_results.append((sym_q, m_q, None, None))
             continue
@@ -2039,9 +2067,14 @@ def _view_oi():
     for i in range(1,5):
         c_i = quad_results[i-1][3] if i <= len(quad_results) else None
         ltd_i = c_i["LTD"].iloc[0] if c_i is not None and not c_i.empty else None
-        ax_i = _dte_axis_style(ltd_i, dte_range, n_target=6)
+        # widen past the sidebar window when this contract is further out, so
+        # its current point is always on the chart
+        rng_i = list(dte_range)
+        if c_i is not None and not c_i.empty:
+            rng_i[0] = max(rng_i[0], int(c_i["days_to_expiry"].iloc[-1]) + 30)
+        ax_i = _dte_axis_style(ltd_i, rng_i, n_target=6)
         ax_i["tickfont"] = dict(size=8, color="#9ca3af")
-        fig4.update_xaxes(range=[dte_range[0], dte_range[1]], **ax_i,
+        fig4.update_xaxes(range=rng_i, **ax_i,
                           row=(i-1)//2+1, col=(i-1)%2+1)
         fig4.update_yaxes(showgrid=True, gridcolor=C["grid"], tickformat=",",
                           tickfont=dict(size=10), zeroline=False,

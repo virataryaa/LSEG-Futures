@@ -8,6 +8,7 @@ across pages rather than one cache per page holding its own copy of the same
 frame. Deliberately thin: data access and constants only, no Streamlit UI.
 """
 import streamlit as st
+import numpy as np
 import pandas as pd
 from pathlib import Path
 
@@ -192,6 +193,18 @@ def load_enriched(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     """Adds oi_share_pct, vol_share_pct, vol_oi_ratio to every row."""
     df = load_data(commodity, mtime)
     tot_oi  = df.groupby("Date")["open_interest"].sum().rename("total_oi")
+    # The per-contract sum is only the whole board from the earliest stored
+    # contract's LTD on; before that the months that had already expired are
+    # missing and the sum runs as low as 0-40% of the market, inflating every
+    # share. Prefer LSEG's own market total (equal to the sum from 2011 on);
+    # where it is absent too, a pre-board date has no trustworthy total at all.
+    lseg = load_total_oi(commodity, _total_oi_mtime())
+    if lseg is not None:
+        tot_oi = lseg.reindex(tot_oi.index).fillna(tot_oi).rename("total_oi")
+        tot_oi[(tot_oi.index < df.groupby("ice_symbol")["LTD"].first().min())
+               & lseg.reindex(tot_oi.index).isna()] = np.nan
+    else:
+        tot_oi[tot_oi.index < df.groupby("ice_symbol")["LTD"].first().min()] = np.nan
     tot_vol = df.groupby("Date")["volume"].sum().rename("total_vol")
     df = df.merge(tot_oi, on="Date").merge(tot_vol, on="Date")
     df["oi_share_pct"] = df["open_interest"] / df["total_oi"]  * 100
