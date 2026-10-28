@@ -1898,7 +1898,19 @@ def _view_oi():
         ("vs Hist Mean",    f"{avg_oi:,.0f}", f"{pct_vs_avg:+.1f}%"),
     ])
 
-    hist_df_ind = df_month[df_month["ice_symbol"].isin(hist_syms)].copy() if show_individual else None
+    # Individual-years picker: one dropdown drives the Raw, Share and Normalized charts
+    ind_syms = []
+    if show_individual:
+        _yr_of = (df_month[df_month["ice_symbol"].isin(hist_syms)]
+                  .groupby("ice_symbol")["year"].first().astype(int))
+        _yr_of = _yr_of[(_yr_of >= hist_range[0]) & (_yr_of <= hist_range[1])].sort_values(ascending=False)
+        _opts = list(_yr_of.index)
+        ind_syms = st.multiselect(
+            "Individual years", _opts, default=_opts,
+            format_func=lambda s: f"{_yr_of[s]} ({s})",
+            key=f"oi_indiv_{commodity}_{selected_month}_{hist_range[0]}_{hist_range[1]}")
+
+    hist_df_ind = df_month[df_month["ice_symbol"].isin(ind_syms)].copy() if show_individual else None
 
     # Normalized panel is computed BEFORE the columns open so that nothing but
     # the chart itself is emitted inside each column: any caption/info block
@@ -1907,7 +1919,17 @@ def _view_oi():
     # one line each, so the two plots start and end at the same height.
     res_n2 = _normalize_oi_at_dte_max(commodity, selected_month, hist_range, current_contract, mt)
 
-    col_raw, col_norm = st.columns(2)
+    res_sh = compute_band(commodity, selected_month, hist_range, "oi_share_pct", use_enriched=True, mtime=mt)
+    if res_sh:
+        b_sh   = res_sh[0]
+        df_enr = load_enriched(commodity, mt)
+        c_sh   = df_enr[df_enr["ice_symbol"] == current_contract].sort_values("Date").copy()
+        lat_sh = c_sh.iloc[-1]
+        dte_sh = int(lat_sh["days_to_expiry"])
+        val_sh = lat_sh["oi_share_pct"]
+        avg_sh = b_sh.loc[(b_sh["days_to_expiry"] - dte_sh).abs().idxmin(), "hist_mean"]
+
+    col_raw, col_share = st.columns(2)
     with col_raw:
         fig_oi = build_chart(
             band, curr_df, "open_interest", current_contract,
@@ -1922,30 +1944,45 @@ def _view_oi():
         st.plotly_chart(fig_oi, use_container_width=True)
         st.caption("Contracts outstanding vs history, by days to expiry.")
 
-    with col_norm:
-        if res_n2 is not None:
-            band_n2, curr_n2, dte_max, current_reached, hist_norm_n2 = res_n2
-            fig_n2 = build_chart(
-                band_n2, curr_n2, "open_interest", current_contract,
-                title=f"<b>{commodity} {month_name}</b>  |  Normalized (% of OI at DTE_max={dte_max})",
-                y_title="Open Interest (% of OI at DTE_max)",
-                y_fmt=".1f", y_suffix="%",
-                outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
-                dte_range=norm_dte_range, dte_now=dte_now,
-                show_individual=show_individual, hist_df=hist_norm_n2, ind_metric="open_interest",
-                height=520, ltd=curr_df["LTD"].iloc[0],
-            )
-            st.plotly_chart(fig_n2, use_container_width=True)
-            note = f"DTE_max={dte_max}: avg DTE of each year's OI peak."
-            if not current_reached:
-                note += f" {current_contract} at {dte_now} DTE — no line yet."
-            st.caption(
-                note,
-                help="DTE_max is the average, across the selected historical years, of the day-to-expiry "
-                     "each year's OI hit its own high; every year's OI curve is then divided by that same "
-                     "year's own OI reading on that DTE_max day (not its own peak) and shown as a %. "
-                     "The current contract only appears once it has counted down to DTE_max.",
-            )
+    with col_share:
+        if res_sh:
+            fig_sh = build_chart(b_sh, c_sh, "oi_share_pct", current_contract,
+                title=f"<b>{commodity} {month_name}</b>  |  OI Market Share",
+                y_title="Share of Total Market OI", y_fmt=".1f", y_suffix="%",
+                outer_color=C["sh_outer"], inner_color=C["sh_inner"], avg_color=C["sh_avg"],
+                dte_range=dte_range, dte_now=dte_sh, height=520,
+                show_individual=show_individual, ind_metric="oi_share_pct",
+                hist_df=df_enr[df_enr["ice_symbol"].isin(ind_syms)] if show_individual else None)
+            st.plotly_chart(fig_sh, use_container_width=True)
+            st.caption(f"Share of all active contracts' OI: {val_sh:.1f}% vs hist mean "
+                       f"{avg_sh:.1f}% ({val_sh-avg_sh:+.1f}pp).")
+
+    # ── Normalized OI (full width, below Raw + Share) ──────────────────────────
+    if res_n2 is not None:
+        band_n2, curr_n2, dte_max, current_reached, hist_norm_n2 = res_n2
+        st.markdown("---")
+        fig_n2 = build_chart(
+            band_n2, curr_n2, "open_interest", current_contract,
+            title=f"<b>{commodity} {month_name}</b>  |  Normalized (% of OI at DTE_max={dte_max})",
+            y_title="Open Interest (% of OI at DTE_max)",
+            y_fmt=".1f", y_suffix="%",
+            outer_color=C["oi_outer"], inner_color=C["oi_inner"], avg_color=C["oi_avg"],
+            dte_range=norm_dte_range, dte_now=dte_now,
+            show_individual=show_individual, ind_metric="open_interest",
+            hist_df=hist_norm_n2[hist_norm_n2["ice_symbol"].isin(ind_syms)] if show_individual else None,
+            height=520, ltd=curr_df["LTD"].iloc[0],
+        )
+        st.plotly_chart(fig_n2, use_container_width=True)
+        note = f"DTE_max={dte_max}: avg DTE of each year's OI peak."
+        if not current_reached:
+            note += f" {current_contract} at {dte_now} DTE — no line yet."
+        st.caption(
+            note,
+            help="DTE_max is the average, across the selected historical years, of the day-to-expiry "
+                 "each year's OI hit its own high; every year's OI curve is then divided by that same "
+                 "year's own OI reading on that DTE_max day (not its own peak) and shown as a %. "
+                 "The current contract only appears once it has counted down to DTE_max.",
+        )
 
     # ── 2x2 Active contracts ──────────────────────────────────────────────────
     st.markdown("---")
@@ -1991,36 +2028,6 @@ def _view_oi():
                           tickfont=dict(size=10), zeroline=False,
                           row=(i-1)//2+1, col=(i-1)%2+1)
     st.plotly_chart(fig4, use_container_width=True)
-
-    # ── OI Market Share ───────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown(f"### {current_contract} — Share of Total {commodity} Market OI (%)")
-    st.caption("Contract OI / sum of all active contracts OI on that date.")
-
-    res_sh = compute_band(commodity, selected_month, hist_range, "oi_share_pct", use_enriched=True, mtime=mt)
-    if res_sh:
-        b_sh = res_sh[0]
-        df_enr  = load_enriched(commodity, mt)
-        c_sh    = df_enr[df_enr["ice_symbol"] == current_contract].sort_values("Date").copy()
-        lat_sh  = c_sh.iloc[-1]
-        dte_sh  = int(lat_sh["days_to_expiry"])
-        val_sh  = lat_sh["oi_share_pct"]
-        idx_sh  = (b_sh["days_to_expiry"] - dte_sh).abs().idxmin()
-        avg_sh  = b_sh.loc[idx_sh, "hist_mean"]
-
-        kpi_row([
-            ("Contract",      current_contract),
-            ("Current Share", f"{val_sh:.1f}%"),
-            ("As of",         lat_sh["Date"].strftime("%b %d, %Y")),
-            ("vs Hist Mean",  f"{avg_sh:.1f}%", f"{val_sh-avg_sh:+.1f}pp"),
-        ])
-
-        fig_sh = build_chart(b_sh, c_sh, "oi_share_pct", current_contract,
-            title=f"<b>{commodity} {month_name}</b>  |  OI Market Share",
-            y_title="Share of Total Market OI", y_fmt=".1f", y_suffix="%",
-            outer_color=C["sh_outer"], inner_color=C["sh_inner"], avg_color=C["sh_avg"],
-            dte_range=dte_range, dte_now=dte_sh, height=480)
-        st.plotly_chart(fig_sh, use_container_width=True)
 
     with st.expander("Current Contract Data", expanded=False):
         tbl = curr_df[["Date","days_to_expiry","open_interest","volume","settlement"]].copy()
