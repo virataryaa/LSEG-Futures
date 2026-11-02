@@ -546,7 +546,7 @@ if view == "Comprehensive View":
 st.markdown("<div class='ctl-gap'></div>", unsafe_allow_html=True)
 
 # ── Controls: in the sidebar, only what the open view uses ─────────────────────
-t_lo, t_hi, unit = 40, 20, "% of start"
+t_lo, t_hi, unit, flow_mode = 40, 20, "% of start", "Daily change"
 t_chk, t_exit = -5, -1
 with sb_ctl:
     st.markdown("---")
@@ -557,6 +557,8 @@ with sb_ctl:
         st.session_state["t_lo_n"], st.session_state["t_hi_n"] = t_lo, t_hi
         if view == "FND Window":
             unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
+        else:
+            flow_mode = pill("flow_mode", "Bars show", ["Daily change", "Level"], "Daily change")
     else:
         n_chk = st.slider("Certs measured at (days before FND)", 1, 80,
                           st.session_state.get("t_chk_n", 5), key=f"w_t_chk_{view}")
@@ -1575,28 +1577,32 @@ if view == "FND Window":
             chart(band_chart(cv_plot, f"Open {unit_c} ÷ certified {unit_c}", ".0f", "×", tozero=True, x_max=0, height=H))
 
 elif view == "Daily Flow":
-    # Day-on-day changes; to_matrix carries a missing session forward, so that day reads 0, never a made-up move
-    oi_d = to_matrix(al, "open_interest", -t_lo - 1, t_hi).diff().loc[-t_lo:] / 1e3
-    sp_d = sp_plot.diff()
+    # Each day's range across past expiries, either as the day's change or as the level that day.
+    # to_matrix carries a missing session forward, so such a day reads 0 change, never a made-up move.
+    chg = flow_mode == "Daily change"
+    per = (lambda g: g.diff().loc[-t_lo:]) if chg else (lambda g: g.loc[-t_lo:])
+    what, sfx = ("daily change", " a day") if chg else ("level", "")
+    oi_d = per(to_matrix(al, "open_interest", -t_lo - 1, t_hi)) / 1e3
+    sp_d = per(to_matrix(al, "spread", -t_lo - 1, t_hi))
     exp_v = to_matrix(al, "volume", -t_lo, t_hi, ffill=0) / 1e3
     nxt_v = to_matrix(al, "next_vol", -t_lo, t_hi, ffill=0) / 1e3
     c = st.columns(2, gap="medium")
     with c[0]:
-        lbl(f"Open interest, daily change · {month}", "'000 lots a day")
-        chart(flow_chart(oi_d, "OI change ('000 lots)", "+,.1f", ranges=True))
+        lbl(f"Open interest, {what} · {month}", f"'000 lots{sfx}")
+        chart(flow_chart(oi_d, f"OI {'change ' if chg else ''}('000 lots)", "+,.1f" if chg else ",.1f", ranges=True))
     with c[1]:
         lbl(f"Volume · {month} vs {nxt_m}", "'000 lots a day")
         chart(volume_chart(exp_v, nxt_v))
     c = st.columns(2, gap="medium")
     with c[0]:
-        lbl(f"Spread, daily change · {month} minus {nxt_m}", "price units a day")
-        chart(flow_chart(sp_d, "Spread change", "+,.2f", ranges=True))
+        lbl(f"Spread, {what} · {month} minus {nxt_m}", f"price units{sfx}")
+        chart(flow_chart(sp_d, f"Spread{' change' if chg else ''}", "+,.2f", ranges=True))
     if certs is not None:
         sc_, u_ = (1e3, "'000 bags") if cfg["unit"] == "bags" else (1.0, "lots")
-        cd = certs_around(comm, month, t_lo + 1, t_hi, None, mt, cfg["path"].stat().st_mtime).diff().loc[-t_lo:] / sc_
+        cd = per(certs_around(comm, month, t_lo + 1, t_hi, None, mt, cfg["path"].stat().st_mtime)) / sc_
         with c[1]:
-            lbl("Certs, daily change", f"{u_} a day")
-            chart(flow_chart(cd, f"Certs change ({u_})", "+,.1f", ranges=True))
+            lbl(f"Certs, {what}", f"{u_}{sfx}")
+            chart(flow_chart(cd, f"Certs {'change ' if chg else ''}({u_})", "+,.1f" if chg else ",.0f", ranges=True))
 
 else:
     unit_c = cfg["unit"]
