@@ -470,6 +470,18 @@ def _tl(t: int) -> str:
     return "FND" if t == 0 else f"T{t}"
 
 
+def window_sliders() -> tuple[int, int]:
+    """The measurement window, in trading days before FND: levels are read at its start, every
+    change (certs, OI, spread, Rollex) runs from its start to its end. Kept under their own keys
+    so the values survive switching views."""
+    n_a = st.slider("Window start (trading days before FND)", 1, 80, st.session_state.get("t_chk_n", 5),
+                    key=f"w_t_chk_{view}")
+    n_b = st.slider("Window end (trading days before FND)", 0, 40, st.session_state.get("t_exit_n", 1),
+                    key=f"w_t_exit_{view}")
+    st.session_state["t_chk_n"], st.session_state["t_exit_n"] = n_a, n_b
+    return -n_a, -n_b
+
+
 def pill(store: str, label: str, options: list, default, fmt=str):
     """Pill radio whose choice survives switching views (a widget not drawn on a
     run loses its state, so the value is kept under its own key)."""
@@ -559,15 +571,8 @@ with sb_ctl:
             unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
         else:
             flow_mode = pill("flow_mode", "Bars show", ["Daily change", "Level"], "Daily change")
-    else:
-        n_chk = st.slider("Certs measured at (days before FND)", 1, 80,
-                          st.session_state.get("t_chk_n", 5), key=f"w_t_chk_{view}")
-        n_exit = st.slider("Spread move ends at (days before FND)", 0, 40,
-                           st.session_state.get("t_exit_n", 1), key=f"w_t_exit_{view}")
-        st.session_state["t_chk_n"], st.session_state["t_exit_n"] = n_chk, n_exit
-        t_chk, t_exit = -n_chk, -n_exit
-        if view == "Comprehensive View":
-            yrs = pill("yrs", "Years in the grids", ["Last 10", "All"], "Last 10")
+    elif view == "Study":
+        t_chk, t_exit = window_sliders()
 if t_exit <= t_chk:
     st.info("The spread move has to end after the day certs are measured.")
     st.stop()
@@ -746,7 +751,7 @@ def expiry_heatmap(pts, col, fmt, cs, suffix="", diverging=False):
         rng = dict(zmin=float(vals.quantile(0.05)), zmax=float(vals.quantile(0.95)))
     fig = go.Figure(go.Heatmap(
         z=piv.values, x=list(piv.columns), y=[str(y) for y in piv.index], text=text.values,
-        texttemplate="<b>%{text}</b>", textfont=dict(size=11.5, color="#111111"), colorscale=cs,
+        texttemplate="%{text}", textfont=dict(size=11.5, color="#111111"), colorscale=cs,
         showscale=False, xgap=3, ygap=3, hovertemplate="%{x}%{y}  <b>%{text}</b><extra></extra>", **rng))
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=len(piv) - 1.5, y1=len(piv) - 1.5,
                   line=dict(color="rgba(10,36,99,.35)", width=1.2))
@@ -797,7 +802,7 @@ def bar_heatmap(pts, col, fmt) -> go.Figure:
                              hoverinfo="skip", showlegend=False))
     fig.add_trace(go.Scatter(x=jj[ok], y=ii[ok], mode="text", text=txt[ok], customdata=keys[ok],
                              textfont=dict(size=11.5, color="#111111", family="Plus Jakarta Sans, sans-serif"),
-                             texttemplate="<b>%{text}</b>", showlegend=False,
+                             texttemplate="%{text}", showlegend=False,
                              hovertemplate="%{customdata}  <b>%{text}</b><extra></extra>"))
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=nr - 1.5, y1=nr - 1.5,
                   line=dict(color="rgba(10,36,99,.35)", width=1.2))
@@ -823,7 +828,7 @@ SP_CSS = """<style>
 .sp-tbl { width:100%; table-layout:fixed; }
 .sp-tbl th:first-child { width:34px; }
 .sp-tbl td { position:relative; height:21px; padding:0; border:0; background:#f4f6fb; overflow:hidden;
-  text-align:center; font-size:11.5px; font-weight:700; color:#111111; white-space:nowrap; }
+  text-align:center; font-size:11.5px; color:#111111; white-space:nowrap; }
 .sp-tbl td .bar { position:absolute; top:4px; bottom:4px; }
 .sp-tbl td .mid { position:absolute; left:50%; top:2px; bottom:2px; width:1px; background:rgba(10,36,99,.14); }
 .sp-tbl td .v { position:relative; z-index:1; }
@@ -1588,6 +1593,23 @@ else:
     kc_k = unit_c == "bags"
     sc = 1e3 if kc_k else 1.0
     u_lbl = "'000 bags" if kc_k else "lots"
+    if view == "Comprehensive View":
+        grid_box = st.container(key="grids")
+        with grid_box:
+            k = st.columns([2, 2, 1.3], gap="large")
+            with k[0]:
+                n_a = st.slider("Window start (trading days before FND)", 1, 80, st.session_state.get("t_chk_n", 5),
+                                key="w_t_chk_cv")
+            with k[1]:
+                n_b = st.slider("Window end (trading days before FND)", 0, 40, st.session_state.get("t_exit_n", 1),
+                                key="w_t_exit_cv")
+            with k[2]:
+                pill("yrs", "Years in the grids", ["Last 10", "All"], "Last 10")
+        st.session_state["t_chk_n"], st.session_state["t_exit_n"] = n_a, n_b
+        t_chk, t_exit = -n_a, -n_b
+        if t_exit <= t_chk:
+            st.info("The window has to end after it starts.")
+            st.stop()
     pts = certs_points(comm, t_chk, t_exit, mt, cmt)
     pts["level_show"], pts["cchg_show"] = pts["level"] / sc, pts["cchg"] / sc
     pts["oi_k"], pts["oichg_k"] = pts["oi"] / 1e3, pts["oichg"] / 1e3
@@ -1634,12 +1656,6 @@ else:
              "rx_idx", f"Rollex, % from {_tl(t_chk)}", "+.1f", "%", "bar", True),
         ]
         scale = {"certs": sc, "open_interest": 1e3}
-        st.markdown(f"<div class='pt-head'><span class='pt-title'>Expiry by expiry"
-                    f"<span class='pt-sub'>levels at {_tl(t_chk)} · changes {win}"
-                    + (f" · orange dotted = {', '.join(pts.loc[pts['live'], 'lbl'])} live, real data to its latest session"
-                       if pts["live"].any() else "")
-                    + (" · hover a cell to preview, click to pin" if hover else "") + "</span></span></div>",
-                    unsafe_allow_html=True)
         st.markdown(SP_CSS, unsafe_allow_html=True)
         if hover:
             cb = certs_base(comm, mt, cmt)
@@ -1649,7 +1665,7 @@ else:
             lv = meta_[meta_["live"] & meta_["t_now"].notna()].sort_values("fnd").groupby("m").head(1)
             live_keys = {r_.m: (k_, f"{r_.m}{int(r_.y) % 100:02d}", int(r_.t_now)) for k_, r_ in lv.iterrows()}
         # All six side by side, in reading order: open interest, certs, then what the market did
-        row = st.container(key="grids")
+        row = grid_box
         for col_, (title, note, colname, fmt, build, ser, s_title, s_fmt, s_suf, style, rebase) in zip(
                 row.columns(6, gap="small"), grids):
             with col_:
