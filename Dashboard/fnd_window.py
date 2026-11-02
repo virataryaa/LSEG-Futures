@@ -1492,7 +1492,8 @@ def certs_around(commodity: str, month: str, t_lo: int, t_hi: int, t_base: int,
         idx = days.searchsorted(fnd) + ts
         ok = (idx >= 0) & (idx < len(days))
         dates = days[idx[ok]]
-        vals = certs.reindex(dates, method="ffill").to_numpy()
+        # A writable copy: newer pandas hands back a read-only view here
+        vals = certs.reindex(dates, method="ffill").to_numpy(dtype="float64", copy=True)
         vals[(dates < certs.index[0]) | (dates > certs.index[-1])] = np.nan
         cols[y] = pd.Series(vals, index=ts[ok])
     piv = pd.DataFrame(cols).reindex(ts)
