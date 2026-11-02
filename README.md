@@ -51,6 +51,23 @@ back to 2011.
   to the basket's back-leg expiry, one line per crop year plus a rolling mean
   and percentile band. Replaces the desk's Excel sheet — see "Two bugs it
   fixes" below.
+- **`Dashboard/fnd_window.py`** — FND Window, **a third, separate Streamlit app**: every
+  contract lined up on trading days to its own First Notice Day. Three views:
+  *FND Window* (expiring-month OI, spread to the next month, volume share and Rollex price,
+  each as a band across past years with the live contract on top, all 7 markets);
+  *Comprehensive View* (KC / RC only: year x contract-month grids of OI, OI change, certs,
+  certs change, spread move and Rollex move over a chosen T-N window, an Avg row, and an
+  **Activate Hover** focus mode where every cell opens its chart and clicks pin up to six,
+  COT_ALL-recap style); *Study* (open positions per cert, certs around FND, certs-change
+  violin by month, and certs vs spread-move scatters). Real data only: the live contract
+  appears once it reaches the measured day and runs only to its latest session.
+- **`Database/certs.parquet`** — total ICE certified stock, `Date, commodity, certs` (KC in
+  60 kg bags, RC in lots over its three grades). **A copy, not a source:** every builder run
+  (`sync_certs`) refreshes it from `Fundamental/Daily Miner/Database/Main`, because the deployed
+  app cannot see that folder; locally the app reads Daily Miner directly.
+- **`Studies/certs_squeeze_backtest.py`** — KC bull-spread-into-FND backtest conditioned on
+  certs (signal from the session before entry, past-only thresholds, costs deducted). Result:
+  no edge over the full history.
 - **`Dashboard/common.py`** — shared constants and cached parquet loaders used
   by both apps.
 - **`Automator/`** — `run.bat` (daily incremental update + git push + email),

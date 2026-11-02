@@ -406,6 +406,48 @@ def sync_rollex() -> int:
         return 0
 
 
+CERTS_SRC = CODE_DIR.parent.parent.parent / "Fundamental" / "Daily Miner" / "Database" / "Main"
+CERTS_PATH = DB_DIR / "certs.parquet"
+# total certified stock per market: KC in 60 kg bags, LRC in lots summed over its three grades
+CERTS_COLS = {"KC": ("KC/kc_certs.parquet", ["KC-TOT-TOT"]),
+              "RC": ("RC/rc_certs.parquet", ["LRC-TOT-VG", "LRC-TOT-NT", "LRC-TOT-CL"])}
+
+
+def sync_certs() -> int:
+    """Refresh Database/certs.parquet (Date, commodity, certs) from the Daily Miner
+    project, for the FND Window app's certs views. A copy, not a source: the deployed
+    app cannot see the sibling folder. Never raises, rewrites only on change."""
+    try:
+        frames = []
+        for comm, (rel, cols) in CERTS_COLS.items():
+            p = CERTS_SRC / rel
+            if not p.exists():
+                log.warning(f"  certs: {p.name} not found, skipped")
+                continue
+            d = pd.read_parquet(p, columns=["Date"] + cols)
+            vals = d[cols].astype("float64")
+            tot = vals.sum(axis=1, min_count=1).where(vals[cols[0]].notna())
+            frames.append(pd.DataFrame({"Date": pd.to_datetime(d["Date"]), "commodity": comm, "certs": tot}).dropna())
+        if not frames:
+            return 0
+        out = (pd.concat(frames, ignore_index=True)
+                 .drop_duplicates(subset=["commodity", "Date"], keep="last")
+                 .sort_values(["commodity", "Date"]).reset_index(drop=True))
+        if CERTS_PATH.exists():
+            try:
+                if pd.read_parquet(CERTS_PATH).equals(out):
+                    log.info(f"  certs: unchanged ({len(out):,} rows)")
+                    return 0
+            except Exception:
+                pass
+        out.to_parquet(CERTS_PATH, index=False)
+        log.info(f"  certs: copied {len(out):,} rows, latest {out['Date'].max().date()}")
+        return len(out)
+    except Exception as e:
+        log.warning(f"  certs: sync failed ({type(e).__name__}: {str(e)[:100]})")
+        return 0
+
+
 TOTAL_OI_PATH = DB_DIR / "total_oi.parquet"
 TOTAL_OI_START = "2000-01-01"     # LSEG carries it back to 2000 for the US markets
 
@@ -594,6 +636,7 @@ if __name__ == "__main__":
 
     # A local file copy: needs no LSEG session, so it runs even if Workspace is down.
     sync_rollex()
+    sync_certs()
 
     import lseg.data as ld
     ld.open_session()
