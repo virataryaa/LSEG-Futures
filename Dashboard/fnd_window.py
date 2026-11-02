@@ -727,36 +727,6 @@ def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360, r
     return fig
 
 
-def volume_chart(exp_v: pd.DataFrame, nxt_v: pd.DataFrame, height: int = 360) -> go.Figure:
-    """Median daily volume of the expiring month and of the next one, stacked, so the day
-    trading moves across shows as the colour change; the live contract's expiring-month
-    volume as navy diamonds."""
-    hy = [y for y in hist_years if y in exp_v and y in nxt_v]
-    ok = exp_v[hy].notna().sum(axis=1) >= 3
-    me, mn = exp_v[hy].median(axis=1)[ok].round(1), nxt_v[hy].median(axis=1)[ok].round(1)
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=me.index, y=me.values, name=f"{month} (expiring), median", marker_color="rgba(123,30,58,.55)",
-                         marker_line_width=0, hovertemplate=f"T%{{x:+d}}  {month} <b>%{{y:,.1f}}k</b><extra></extra>"))
-    fig.add_trace(go.Bar(x=mn.index, y=mn.values, name=f"{nxt_m} (next), median", marker_color="rgba(44,143,157,.50)",
-                         marker_line_width=0, hovertemplate=f"T%{{x:+d}}  {nxt_m} <b>%{{y:,.1f}}k</b><extra></extra>"))
-    cur = exp_v[cur_year].dropna().round(1) if cur_year in exp_v else pd.Series(dtype=float)
-    if len(cur):
-        fig.add_trace(go.Scatter(x=cur.index, y=cur.values, mode="markers", name=f"{cur_lbl} expiring volume",
-                                 marker=dict(symbol="diamond", size=7, color=NAVY, line=dict(color="#ffffff", width=1)),
-                                 hovertemplate=f"{cur_lbl} T%{{x:+d}}  <b>%{{y:,.1f}}k</b><extra></extra>"))
-    fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
-    fig.add_annotation(x=0, y=1, yref="paper", yshift=12, text="<b>FND</b>", showarrow=False, font=dict(size=10, color=NAVY))
-    fig.update_layout(
-        height=height, margin=dict(t=30, b=60, l=50, r=16), hovermode="closest", barmode="stack", bargap=0.25,
-        legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
-        xaxis=dict(range=[-t_lo - 0.5, t_hi + 0.5], tickformat="+d", dtick=5, showgrid=False, tickfont=AXIS_FONT,
-                   title=dict(text="Trading days to FND", font=dict(size=10, color="#7a86a8"))),
-        yaxis=dict(title=dict(text="Volume ('000 lots)", font=dict(size=10, color="#7a86a8")), showgrid=True,
-                   gridcolor=GRID, zeroline=False, tickfont=dict(size=10, color="#7a86a8")),
-        **_D)
-    return fig
-
-
 def expiry_heatmap(pts, col, fmt, cs, suffix="", diverging=False):
     """Delivery year (rows, newest first) x contract month, Rollex heatmap finish.
     The colour range is clipped at the 90th percentile so one wild year does not
@@ -1584,15 +1554,14 @@ elif view == "Daily Flow":
     what, sfx = ("daily change", " a day") if chg else ("level", "")
     oi_d = per(to_matrix(al, "open_interest", -t_lo - 1, t_hi)) / 1e3
     sp_d = per(to_matrix(al, "spread", -t_lo - 1, t_hi))
-    exp_v = to_matrix(al, "volume", -t_lo, t_hi, ffill=0) / 1e3
-    nxt_v = to_matrix(al, "next_vol", -t_lo, t_hi, ffill=0) / 1e3
+    exp_v = to_matrix(al, "volume", -t_lo, t_hi, ffill=0) / 1e3      # the move to the next month: FND Window's volume share
     c = st.columns(2, gap="medium")
     with c[0]:
         lbl(f"Open interest, {what} · {month}", f"'000 lots{sfx}")
         chart(flow_chart(oi_d, f"OI {'change ' if chg else ''}('000 lots)", "+,.1f" if chg else ",.1f", ranges=True))
     with c[1]:
-        lbl(f"Volume · {month} vs {nxt_m}", "'000 lots a day")
-        chart(volume_chart(exp_v, nxt_v))
+        lbl(f"Volume · {month}", "'000 lots a day")
+        chart(flow_chart(exp_v, "Volume ('000 lots)", ",.1f", ranges=True))
     c = st.columns(2, gap="medium")
     with c[0]:
         lbl(f"Spread, {what} · {month} minus {nxt_m}", f"price units{sfx}")
