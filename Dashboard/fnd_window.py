@@ -515,7 +515,7 @@ cfg = CERTS.get(comm)
 certs = load_certs(comm, cfg["path"].stat().st_mtime) if cfg and cfg["path"].exists() else None
 
 # ── Navigation ────────────────────────────────────────────────────────────────
-VIEWS = ["FND Window"] + (["Comprehensive View", "Study"]
+VIEWS = ["FND Window", "Daily Flow"] + (["Comprehensive View", "Study"]
                           if certs is not None else [])
 _v = st.session_state.get("view_store", VIEWS[0])
 if "rh_on" not in st.session_state:
@@ -550,12 +550,13 @@ t_lo, t_hi, unit = 40, 20, "% of start"
 t_chk, t_exit = -5, -1
 with sb_ctl:
     st.markdown("---")
-    if view == "FND Window":
+    if view in ("FND Window", "Daily Flow"):
         # Kept under their own keys so the values survive switching views
         t_lo = st.slider("Days before FND", 10, 80, st.session_state.get("t_lo_n", 40), 5, key="w_t_lo")
         t_hi = st.slider("Days after FND", 0, 30, st.session_state.get("t_hi_n", 20), key="w_t_hi")
         st.session_state["t_lo_n"], st.session_state["t_hi_n"] = t_lo, t_hi
-        unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
+        if view == "FND Window":
+            unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
     else:
         n_chk = st.slider("Certs measured at (days before FND)", 1, 80,
                           st.session_state.get("t_chk_n", 5), key=f"w_t_chk_{view}")
@@ -669,6 +670,75 @@ def _live_marks(fig, piv, pts) -> None:
             j, i = cols.index(r.m), rows.index(str(r.y))
             fig.add_shape(type="rect", x0=j - 0.47, x1=j + 0.47, y0=i - 0.44, y1=i + 0.44,
                           line=dict(color="#ea580c", width=1.6, dash="dot"))
+
+
+def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360) -> go.Figure:
+    """Day-by-day bars against trading days to FND: the median past expiry on each day
+    (teal up, wine down) with a 25-75% whisker, and the live contract's own days as
+    navy diamonds. Real readings only: a day a contract has no data is left out."""
+    hy = [y for y in hist_years if y in daily]
+    hist = daily[hy]
+    n = hist.notna().sum(axis=1)
+    q = hist.quantile([0.25, 0.5, 0.75], axis=1).T[n >= 3].round(1)
+    med = q[0.5]
+    fig = go.Figure(go.Bar(
+        x=med.index, y=med.values, name=f"Median of {len(hy)} past", marker_line_width=0,
+        marker_color=["rgba(44,143,157,.55)" if v >= 0 else "rgba(123,30,58,.45)" for v in med.values],
+        error_y=dict(type="data", symmetric=False, array=(q[0.75] - med).values, arrayminus=(med - q[0.25]).values,
+                     color="rgba(10,36,99,.28)", thickness=1, width=2),
+        customdata=np.stack([q[0.25].values, q[0.75].values], axis=1),
+        hovertemplate=f"T%{{x:+d}}  median <b>%{{y:{fmt}}}</b>  (25-75%: %{{customdata[0]:{fmt}}} to %{{customdata[1]:{fmt}}})<extra></extra>"))
+    cur = daily[cur_year].dropna().round(1) if cur_year in daily else pd.Series(dtype=float)
+    if len(cur):
+        fig.add_trace(go.Scatter(x=cur.index, y=cur.values, mode="markers", name=f"{cur_lbl} (live)",
+                                 marker=dict(symbol="diamond", size=7, color=NAVY, line=dict(color="#ffffff", width=1)),
+                                 hovertemplate=f"{cur_lbl} T%{{x:+d}}  <b>%{{y:{fmt}}}</b><extra></extra>"))
+    fig.add_hline(y=0, line=dict(color="rgba(10,36,99,0.25)", width=1))
+    fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
+    fig.add_annotation(x=0, y=1, yref="paper", yshift=12, text="<b>FND</b>", showarrow=False, font=dict(size=10, color=NAVY))
+    if med_ltd != 0 and -t_lo <= med_ltd <= t_hi:
+        fig.add_vline(x=med_ltd, line=dict(color="rgba(10,36,99,0.18)", width=1, dash="dot"))
+        fig.add_annotation(x=med_ltd, y=1, yref="paper", yshift=12, text="LTD", showarrow=False,
+                           font=dict(size=10, color="#7a86a8"))
+    fig.update_layout(
+        height=height, margin=dict(t=30, b=60, l=50, r=16), hovermode="closest", bargap=0.25,
+        legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
+        xaxis=dict(range=[-t_lo - 0.5, t_hi + 0.5], tickformat="+d", dtick=5, showgrid=False, tickfont=AXIS_FONT,
+                   title=dict(text="Trading days to FND", font=dict(size=10, color="#7a86a8"))),
+        yaxis=dict(title=dict(text=y_title, font=dict(size=10, color="#7a86a8")), showgrid=True, gridcolor=GRID,
+                   zeroline=False, tickfont=dict(size=10, color="#7a86a8")),
+        **_D)
+    return fig
+
+
+def volume_chart(exp_v: pd.DataFrame, nxt_v: pd.DataFrame, height: int = 360) -> go.Figure:
+    """Median daily volume of the expiring month and of the next one, stacked, so the day
+    trading moves across shows as the colour change; the live contract's expiring-month
+    volume as navy diamonds."""
+    hy = [y for y in hist_years if y in exp_v and y in nxt_v]
+    ok = exp_v[hy].notna().sum(axis=1) >= 3
+    me, mn = exp_v[hy].median(axis=1)[ok].round(1), nxt_v[hy].median(axis=1)[ok].round(1)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=me.index, y=me.values, name=f"{month} (expiring), median", marker_color="rgba(123,30,58,.55)",
+                         marker_line_width=0, hovertemplate=f"T%{{x:+d}}  {month} <b>%{{y:,.1f}}k</b><extra></extra>"))
+    fig.add_trace(go.Bar(x=mn.index, y=mn.values, name=f"{nxt_m} (next), median", marker_color="rgba(44,143,157,.50)",
+                         marker_line_width=0, hovertemplate=f"T%{{x:+d}}  {nxt_m} <b>%{{y:,.1f}}k</b><extra></extra>"))
+    cur = exp_v[cur_year].dropna().round(1) if cur_year in exp_v else pd.Series(dtype=float)
+    if len(cur):
+        fig.add_trace(go.Scatter(x=cur.index, y=cur.values, mode="markers", name=f"{cur_lbl} expiring volume",
+                                 marker=dict(symbol="diamond", size=7, color=NAVY, line=dict(color="#ffffff", width=1)),
+                                 hovertemplate=f"{cur_lbl} T%{{x:+d}}  <b>%{{y:,.1f}}k</b><extra></extra>"))
+    fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
+    fig.add_annotation(x=0, y=1, yref="paper", yshift=12, text="<b>FND</b>", showarrow=False, font=dict(size=10, color=NAVY))
+    fig.update_layout(
+        height=height, margin=dict(t=30, b=60, l=50, r=16), hovermode="closest", barmode="stack", bargap=0.25,
+        legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
+        xaxis=dict(range=[-t_lo - 0.5, t_hi + 0.5], tickformat="+d", dtick=5, showgrid=False, tickfont=AXIS_FONT,
+                   title=dict(text="Trading days to FND", font=dict(size=10, color="#7a86a8"))),
+        yaxis=dict(title=dict(text="Volume ('000 lots)", font=dict(size=10, color="#7a86a8")), showgrid=True,
+                   gridcolor=GRID, zeroline=False, tickfont=dict(size=10, color="#7a86a8")),
+        **_D)
+    return fig
 
 
 def expiry_heatmap(pts, col, fmt, cs, suffix="", diverging=False):
@@ -1484,6 +1554,30 @@ if view == "FND Window":
             cv_plot = to_matrix(al, "cover", -t_lo, t_hi).loc[:0]     # past FND the month is all but closed
             chart(band_chart(cv_plot, f"Open {unit_c} ÷ certified {unit_c}", ".0f", "×", tozero=True, x_max=0, height=H))
 
+elif view == "Daily Flow":
+    # Day-on-day changes; to_matrix carries a missing session forward, so that day reads 0, never a made-up move
+    oi_d = to_matrix(al, "open_interest", -t_lo - 1, t_hi).diff().loc[-t_lo:] / 1e3
+    sp_d = sp_plot.diff()
+    exp_v = to_matrix(al, "volume", -t_lo, t_hi, ffill=0) / 1e3
+    nxt_v = to_matrix(al, "next_vol", -t_lo, t_hi, ffill=0) / 1e3
+    c = st.columns(2, gap="medium")
+    with c[0]:
+        lbl(f"Open interest, daily change · {month}", "'000 lots a day")
+        chart(flow_chart(oi_d, "OI change ('000 lots)", "+,.1f"))
+    with c[1]:
+        lbl(f"Volume · {month} vs {nxt_m}", "'000 lots a day")
+        chart(volume_chart(exp_v, nxt_v))
+    c = st.columns(2, gap="medium")
+    with c[0]:
+        lbl(f"Spread, daily change · {month} minus {nxt_m}", "price units a day")
+        chart(flow_chart(sp_d, "Spread change", "+,.2f"))
+    if certs is not None:
+        sc_, u_ = (1e3, "'000 bags") if cfg["unit"] == "bags" else (1.0, "lots")
+        cd = certs_around(comm, month, t_lo + 1, t_hi, None, mt, cfg["path"].stat().st_mtime).diff().loc[-t_lo:] / sc_
+        with c[1]:
+            lbl("Certs, daily change", f"{u_} a day")
+            chart(flow_chart(cd, f"Certs change ({u_})", "+,.1f"))
+
 else:
     unit_c = cfg["unit"]
     cmt = cfg["path"].stat().st_mtime
@@ -1512,18 +1606,11 @@ else:
         st.markdown(f"<div class='pt-head'><span class='pt-title'>Certs vs spread move"
                     f"<span class='pt-sub'>{win} · {len(pts)} past contracts</span></span></div>",
                     unsafe_allow_html=True)
-        c = st.columns(3, gap="medium")
-        with c[0]:
-            lbl("Open positions ÷ certs")
-            chart(certs_scatter(pts, "mult", f"Open {unit_c} ÷ certs", ".0f", now_mult, f"{cur_lbl} now {now_mult:.0f}x"))
-        with c[1]:
+        # Certs level is the one that carries a pattern: the big spread moves all came with low certs
+        with st.columns([1, 2, 1])[1]:
             lbl("Certs level", u_lbl)
             chart(certs_scatter(pts, "level_show", f"Certs ({u_lbl})", ",.0f",
                                 certs.iloc[-1] / sc, f"Now {certs.iloc[-1] / sc:,.0f}"))
-        with c[2]:
-            lbl("Certs change", u_lbl)
-            chart(certs_scatter(pts, "cchg_show", f"Certs change ({u_lbl})", "+,.0f",
-                                now_c, f"{cur_lbl} so far {now_c:+,.0f}"))
 
     else:
         if st.session_state.get("yrs", "Last 10") == "Last 10":
