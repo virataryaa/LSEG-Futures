@@ -679,17 +679,18 @@ def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360, r
     hy = [y for y in hist_years if y in daily]
     hist = daily[hy]
     n = hist.notna().sum(axis=1)
-    q = hist.quantile([0.1, 0.25, 0.5, 0.75, 0.9], axis=1).T[n >= 3].round(2)
+    q = hist.quantile([0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0], axis=1).T[n >= 3].round(2)
     med = q[0.5]
     fig = go.Figure()
     if ranges:
-        # Moves that go both ways (spread, certs): a day's median is ~0 and says nothing about size,
-        # so show the usual range instead: 10-90% light, 25-75% darker, median as a tick
-        for lo, hi, col, nm in ((0.1, 0.9, "rgba(99,102,241,.16)", "10-90% of past"),
+        # The usual range of a day's move rather than one median bar (for spread and certs a day's
+        # median sits near zero and says nothing about size): min-max faint, 10-90%, 25-75%, median tick
+        for lo, hi, col, nm in ((0.0, 1.0, "rgba(99,102,241,.07)", "Min-max of past"),
+                                (0.1, 0.9, "rgba(99,102,241,.16)", "10-90% of past"),
                                 (0.25, 0.75, "rgba(99,102,241,.38)", "25-75% of past")):
             fig.add_trace(go.Bar(x=q.index, y=(q[hi] - q[lo]).values, base=q[lo].values, name=nm, marker_color=col,
                                  marker_line_width=0, customdata=np.stack([q[lo].values, q[hi].values], axis=1),
-                                 hovertemplate=f"T%{{x:+d}}  {nm[:5]} <b>%{{customdata[0]:{fmt}}} to %{{customdata[1]:{fmt}}}</b><extra></extra>"))
+                                 hovertemplate=f"T%{{x:+d}}  {nm[:-8]} <b>%{{customdata[0]:{fmt}}} to %{{customdata[1]:{fmt}}}</b><extra></extra>"))
         fig.add_trace(go.Scatter(x=med.index, y=med.values, mode="markers", name="Median of past",
                                  marker=dict(symbol="line-ew", size=11, line=dict(color="#4f46e5", width=2)),
                                  hovertemplate=f"T%{{x:+d}}  median <b>%{{y:{fmt}}}</b><extra></extra>"))
@@ -1582,7 +1583,7 @@ elif view == "Daily Flow":
     c = st.columns(2, gap="medium")
     with c[0]:
         lbl(f"Open interest, daily change · {month}", "'000 lots a day")
-        chart(flow_chart(oi_d, "OI change ('000 lots)", "+,.1f"))
+        chart(flow_chart(oi_d, "OI change ('000 lots)", "+,.1f", ranges=True))
     with c[1]:
         lbl(f"Volume · {month} vs {nxt_m}", "'000 lots a day")
         chart(volume_chart(exp_v, nxt_v))
