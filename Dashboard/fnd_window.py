@@ -1156,6 +1156,14 @@ def _pin_click_helper() -> None:
                     f" s.textContent = {json.dumps(code)}; d.head.appendChild(s); }})();</script>", height=0)
 
 
+def _heat_bg(f: float, style: str) -> str:
+    """Cell shading for a 0-1 position: teal deepening with f, or for "heat_rt" wine below
+    the middle, white at it, teal above."""
+    if style == "heat_rt":
+        return (f"rgba(123,30,58,{(0.5 - f) * 0.62:.2f})" if f < 0.5 else f"rgba(44,143,157,{(f - 0.5) * 0.9:.2f})")
+    return f"rgba(44,143,157,{0.04 + 0.42 * f:.2f})"
+
+
 def hover_table(pts: pd.DataFrame, col: str, fmt: str, series: pd.DataFrame, title: str,
                 s_fmt: str, s_suf: str = "", style: str = "bar", rebase: bool = False,
                 avg_mode: str = "change", hist_keys: dict | None = None, live_keys: dict | None = None,
@@ -1210,7 +1218,7 @@ def hover_table(pts: pd.DataFrame, col: str, fmt: str, series: pd.DataFrame, tit
             else:
                 f = min(max((v - q_lo) / ((q_hi - q_lo) or 1), 0), 1)
                 f = 1 - f if style == "heat_r" else f
-                cell, bg = "", f" style='background:rgba(44,143,157,{0.04 + 0.42 * f:.2f})'"
+                cell, bg = "", f" style='background:{_heat_bg(f, style)}'"
             k = days.searchsorted(r.fnd) + span
             ok = (k >= 0) & (k < len(days))
             cal = dict(zip(span[ok].tolist(), days[k[ok]]))
@@ -1304,7 +1312,7 @@ def hover_table(pts: pd.DataFrame, col: str, fmt: str, series: pd.DataFrame, tit
         else:
             f = min(max((v - q_lo) / ((q_hi - q_lo) or 1), 0), 1)
             f = 1 - f if style == "heat_r" else f
-            cell, bg = "", f" style='background:rgba(44,143,157,{0.04 + 0.42 * f:.2f})'"
+            cell, bg = "", f" style='background:{_heat_bg(f, style)}'"
         tds.append(f"<td class='rh-hov'{bg}>{cell}<span class='v'>{v:{fmt}}</span>{pop}</td>")
     rows.append(f"<tr class='avg'><th class='yr'>Avg</th>{''.join(tds)}</tr>")
     head_ = "".join(f"<th>{m}</th>" for m in months)
@@ -1616,8 +1624,8 @@ else:
              "open_interest", "open interest ('000 lots)", ",.1f", "", "heat", False),
             ("OI change", "'000 lots", "oichg_k", "+,.1f", lambda: bar_heatmap(pts, "oichg_k", "+,.1f"),
              "open_interest", "open interest ('000 lots)", ",.1f", "", "bar", False),
-            (f"Certs level {_tl(t_chk)}", u_lbl, "level_show", ",.0f", lambda: expiry_heatmap(pts, "level_show", ",.0f", GRID_CS),
-             "certs", f"certs ({u_lbl})", ",.0f", "", "heat", False),
+            (f"Certs level {_tl(t_chk)}", u_lbl, "level_show", ",.0f", lambda: expiry_heatmap(pts, "level_show", ",.0f", RET_CS),
+             "certs", f"certs ({u_lbl})", ",.0f", "", "heat_rt", False),
             ("Certs change", u_lbl, "cchg_show", "+,.0f", lambda: bar_heatmap(pts, "cchg_show", "+,.0f"),
              "certs", f"certs ({u_lbl})", ",.0f", "", "bar", False),
             ("Spread move", "price", "dsp", "+,.1f", lambda: bar_heatmap(pts, "dsp", "+,.1f"),
