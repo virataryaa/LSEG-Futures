@@ -453,6 +453,10 @@ def lbl(t: str, note: str = "") -> None:
 
 
 def chart(fig) -> None:
+    # One decimal on every hover that does not set its own format (violin stats, unified hovers)
+    for tr in fig.data:
+        if "yhoverformat" in tr and tr.yhoverformat is None:
+            tr.yhoverformat = ",.1f"
     # Figures that set their own width (the year x month grids) keep it; the rest fill the column
     st.plotly_chart(fig, width="content" if fig.layout.width else "stretch", config={"displayModeBar": False})
 
@@ -1261,7 +1265,7 @@ def month_violin(pts, col, unit_lbl, now_v=np.nan) -> go.Figure:
     for m in order:
         d = pts[pts["m"] == m]
         fig.add_trace(go.Violin(
-            x=[m] * len(d), y=d[col], name=m, customdata=d["lbl"], showlegend=False,
+            x=[m] * len(d), y=d[col].round(1), name=m, customdata=d["lbl"], showlegend=False, hoveron="points",
             fillcolor="rgba(44,143,157,0.10)", line=dict(color="rgba(44,143,157,0.55)", width=0.9),
             box=dict(visible=True, width=0.22, fillcolor="rgba(255,255,255,0.85)",
                      line=dict(color="rgba(44,143,157,0.8)", width=1)),
