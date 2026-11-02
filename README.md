@@ -52,19 +52,33 @@ back to 2011.
   and percentile band. Replaces the desk's Excel sheet — see "Two bugs it
   fixes" below.
 - **`Dashboard/fnd_window.py`** — FND Window, **a third, separate Streamlit app**: every
-  contract lined up on trading days to its own First Notice Day. Three views:
-  *FND Window* (expiring-month OI, spread to the next month, volume share and Rollex price,
-  each as a band across past years with the live contract on top, all 7 markets);
-  *Comprehensive View* (KC / RC only: year x contract-month grids of OI, OI change, certs,
-  certs change, spread move and Rollex move over a chosen T-N window, an Avg row, and an
-  **Activate Hover** focus mode where every cell opens its chart and clicks pin up to six,
-  COT_ALL-recap style); *Study* (open positions per cert, certs around FND, certs-change
-  violin by month, and certs vs spread-move scatters). Real data only: the live contract
-  appears once it reaches the measured day and runs only to its latest session.
+  contract lined up on trading days to its own First Notice Day (T-N before, T+N after).
+  Five views:
+  - *FND Window* (all 7 markets): bands across past years, live contract on top, for open
+    interest (level and change), the expiring month's share of whole-market volume, the spread
+    to the next month (level and change), Rollex, and on KC / RC certs (level, change) and
+    open positions per certified unit.
+  - *Daily Flow*: day-by-day range bars (min-max, 10-90%, 25-75%, median) of OI, volume,
+    spread and certs, switchable between daily change and level; live days as diamonds.
+  - *Roll & Positioning*: where the expiring month's OI goes each day (next month, other
+    months, or closed) with the index roll window marked; and COT weekly OI change by trader
+    group around FND, with index long (CIT) where it exists.
+  - *Comprehensive View* (KC / RC): year x contract-month grids of OI, OI change, certs
+    level, certs change, spread move and Rollex move over a chosen window, an Avg row, and an
+    **Activate Hover** focus mode (every cell opens its chart, clicks pin up to six,
+    COT_ALL-recap style; the Avg row opens that month's seasonality across all years).
+  - *Study* (KC / RC): certs change by contract month (violin) and certs level vs spread move.
+
+  Real data only: the live contract appears once it reaches the measured day and runs only
+  to its latest session; nothing is projected.
 - **`Database/certs.parquet`** — total ICE certified stock, `Date, commodity, certs` (KC in
   60 kg bags, RC in lots over its three grades). **A copy, not a source:** every builder run
   (`sync_certs`) refreshes it from `Fundamental/Daily Miner/Database/Main`, because the deployed
   app cannot see that folder; locally the app reads Daily Miner directly.
+- **`Database/cot.parquet`** — weekly COT per market from `LSEG/COT_ALL/Database`: total OI,
+  each trader group's share of it ((long + short + 2 x spread) / 2, so the groups add up to
+  total OI), managed-money net and CIT index long (US markets only). Same arrangement as the
+  certs copy: refreshed by the builder (`sync_cot`).
 - **`Studies/certs_squeeze_backtest.py`** — KC bull-spread-into-FND backtest conditioned on
   certs (signal from the session before entry, past-only thresholds, costs deducted). Result:
   no edge over the full history.
@@ -173,3 +187,51 @@ Reconstruction was validated against the desk sheet's own cells — 24/25 at
 DTE 182 matches to the digit (214,073), and the other complete years agree
 within 0.3%, the residual being the sheet's 7-day sampling grid versus the
 daily DTE grid used here.
+
+## FND Window: what the data shows (KC, as of Nov 2026)
+
+Measured on every finished KC contract since 2011 (about 78 expiries, 15 per delivery month),
+real settlements, open interest, certs and COT only. These are averages and ranges of the past,
+not forecasts; check them again as new expiries come in.
+
+**When the roll happens**
+- About **half of the expiring month's OI drop from T-40 to T-1 happens in six sessions**: the
+  5th-10th business days of the FND month, the GSCI (5th-9th) / BCOM (6th-10th) index roll
+  window, which falls at about **T-10 to T-5**. OI leaves about **3x faster** there (~8,400
+  lots a day vs ~2,800 on other days of the last 20). Same in every delivery month (48-53%).
+- Trading moves with it: the expiring month's share of whole-market volume falls from ~60% at
+  T-40 to ~15% at FND.
+
+**Where the OI goes**
+- Over those six days the expiring month loses a median ~47k lots; the next month gains ~27k
+  (about 56%), months further out take part of the rest, and **whole-market OI falls ~11k**:
+  those positions are closed, not rolled.
+- COT (weekly, all months together): **index long barely moves** around FND (about -1k lots a
+  week) — index money rolls, it does not leave. In the week before FND the drop comes from
+  managed money (about half of it spread positions), other reportables and swap dealers; in
+  the FND week mostly from producers / merchants.
+
+**Spread and certs**
+- On a typical day the expiring-minus-next spread barely moves into FND (median daily change ~0).
+- **Certs do not predict the spread's direction.** Certs level, certs change, open positions
+  per cert, managed-money net and index share all show rank correlations near 0 with the move
+  into FND, and a bull spread bought on low certs (T-5 to T-1, costs deducted) lost money over
+  the full history (`Studies/certs_squeeze_backtest.py`).
+- **Low certs go with bigger spread swings, both ways**: every large move (beyond about ±10c)
+  came with certs under ~1 million bags, almost all since 2024. Read low certs as a risk
+  flag, not a signal. Part of the post-2024 effect is the higher price level itself, since
+  spreads are in cents.
+
+**Z26 (FND 19 Nov 2026), at about T-15**
+- Roll pace, OI and volume: inside the usual range.
+- Daily spread moves: outside the past 10-90% range on several days.
+- Certs: about 225k bags, the lowest reading for a December contract in the data; open
+  positions about 80x certified stock.
+- Reading: the roll should run through the usual index window, but with record-low certs and
+  an already jumpy spread, positions left in the expiring month near FND carry more spread risk
+  than usual. Risk, not direction.
+
+**Limits**: COT is weekly (Tuesday) and sums all contract months, so it cannot attribute a move
+to a single expiry or day; the certs / spread pattern since 2024 rests on a handful of
+contracts; index roll dates are taken as the 5th-10th business days of the FND month, not from
+the index providers' published calendars.

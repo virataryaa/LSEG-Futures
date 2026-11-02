@@ -448,6 +448,50 @@ def sync_certs() -> int:
         return 0
 
 
+COT_SRC = CODE_DIR.parent.parent / "COT_ALL" / "Database"
+COT_PATH = DB_DIR / "cot.parquet"
+
+
+def sync_cot() -> int:
+    """Refresh Database/cot.parquet from the COT_ALL project: weekly open interest split by trader
+    group as each group's share of OI ((long + short + 2 x spread) / 2, so the groups add up to
+    total OI), managed-money net, and index long from the CIT report (US markets only). A copy,
+    not a source, for the FND Window app. Never raises, rewrites only on change."""
+    try:
+        dg = pd.read_parquet(COT_SRC / "cot_disagg_fut.parquet")
+        dg = dg[(dg["Crop"] == "All") & dg["Commodity"].isin(COMMODITIES)]
+        f = lambda c: pd.to_numeric(dg[c], errors="coerce").fillna(0).astype("float64")
+        out = pd.DataFrame({
+            "Date": pd.to_datetime(dg["Date"]), "commodity": dg["Commodity"],
+            "oi": f("Total OI"),
+            "producer": (f("Producer Long") + f("Producer Short")) / 2,
+            "swap": (f("Swap Long") + f("Swap Short")) / 2 + f("Swap Spread"),
+            "mm": (f("MM Long") + f("MM Short")) / 2 + f("MM Spread"),
+            "other": (f("Other Long") + f("Other Short")) / 2 + f("Other Spread"),
+            "nonrep": (f("Non Rep Long") + f("Non Rep Short")) / 2,
+            "mm_net": f("MM Long") - f("MM Short")})
+        cit_p = COT_SRC / "cot_cit.parquet"
+        if cit_p.exists():
+            cit = pd.read_parquet(cit_p, columns=["Commodity", "Date", "Index Long"])
+            cit = cit.rename(columns={"Commodity": "commodity", "Index Long": "index_long"})
+            cit["Date"] = pd.to_datetime(cit["Date"])
+            out = out.merge(cit, on=["commodity", "Date"], how="left")
+        out = out.sort_values(["commodity", "Date"]).reset_index(drop=True)
+        if COT_PATH.exists():
+            try:
+                if pd.read_parquet(COT_PATH).equals(out):
+                    log.info(f"  cot: unchanged ({len(out):,} rows)")
+                    return 0
+            except Exception:
+                pass
+        out.to_parquet(COT_PATH, index=False)
+        log.info(f"  cot: copied {len(out):,} rows, latest {out['Date'].max().date()}")
+        return len(out)
+    except Exception as e:
+        log.warning(f"  cot: sync failed ({type(e).__name__}: {str(e)[:100]})")
+        return 0
+
+
 TOTAL_OI_PATH = DB_DIR / "total_oi.parquet"
 TOTAL_OI_START = "2000-01-01"     # LSEG carries it back to 2000 for the US markets
 
@@ -637,6 +681,7 @@ if __name__ == "__main__":
     # A local file copy: needs no LSEG session, so it runs even if Workspace is down.
     sync_rollex()
     sync_certs()
+    sync_cot()
 
     import lseg.data as ld
     ld.open_session()

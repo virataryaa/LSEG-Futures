@@ -527,7 +527,7 @@ cfg = CERTS.get(comm)
 certs = load_certs(comm, cfg["path"].stat().st_mtime) if cfg and cfg["path"].exists() else None
 
 # ── Navigation ────────────────────────────────────────────────────────────────
-VIEWS = ["FND Window", "Daily Flow"] + (["Comprehensive View", "Study"]
+VIEWS = ["FND Window", "Daily Flow", "Roll & Positioning"] + (["Comprehensive View", "Study"]
                           if certs is not None else [])
 _v = st.session_state.get("view_store", VIEWS[0])
 if "rh_on" not in st.session_state:
@@ -562,14 +562,14 @@ t_lo, t_hi, unit, flow_mode = 40, 20, "% of start", "Daily change"
 t_chk, t_exit = -5, -1
 with sb_ctl:
     st.markdown("---")
-    if view in ("FND Window", "Daily Flow"):
+    if view in ("FND Window", "Daily Flow", "Roll & Positioning"):
         # Kept under their own keys so the values survive switching views
         t_lo = st.slider("Days before FND", 10, 80, st.session_state.get("t_lo_n", 40), 5, key="w_t_lo")
         t_hi = st.slider("Days after FND", 0, 30, st.session_state.get("t_hi_n", 20), key="w_t_hi")
         st.session_state["t_lo_n"], st.session_state["t_hi_n"] = t_lo, t_hi
         if view == "FND Window":
             unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
-        else:
+        elif view == "Daily Flow":
             flow_mode = pill("flow_mode", "Bars show", ["Daily change", "Level"], "Daily change")
     elif view == "Study":
         t_chk, t_exit = window_sliders()
@@ -677,6 +677,164 @@ def _live_marks(fig, piv, pts) -> None:
             j, i = cols.index(r.m), rows.index(str(r.y))
             fig.add_shape(type="rect", x0=j - 0.47, x1=j + 0.47, y0=i - 0.44, y1=i + 0.44,
                           line=dict(color="#ea580c", width=1.6, dash="dot"))
+
+
+@st.cache_data(show_spinner=False)
+def roll_flow(commodity: str, month: str, t_lo: int, t_hi: int, mt: float = 0.0):
+    """Where the expiring month's open interest goes, day by day around its FND, for every past
+    `month` contract: change in the expiring month, the next listed month, all other months, and
+    the whole market (so closed positions show as the market falling). Also where the index roll
+    window (5th to 10th business day of the FND month: GSCI 5-9, BCOM 6-10) fell, in days to FND."""
+    df = load_data(commodity, mt)
+    days = market_calendar(commodity, mt)
+    oi = df.pivot_table(index="Date", columns="ice_symbol", values="open_interest").reindex(days).ffill(limit=3)
+    first_ltd = df.groupby("ice_symbol")["LTD"].first().min()
+    total = oi.sum(axis=1, min_count=1).where(days >= first_ltd)      # incomplete board before then
+    ltd = df.groupby("ice_symbol")["LTD"].first().sort_values()
+    nxt = dict(zip(ltd.index[:-1], ltd.index[1:]))
+    asof = df["Date"].max()
+    info = df[df["month"] == month].groupby("ice_symbol").agg(FND=("FND", "first"), LTD=("LTD", "first"), y=("year", "first"))
+    rows, wins = [], []
+    for k, r in info.iterrows():
+        if k not in nxt or r.LTD >= asof:
+            continue
+        fnd = pd.Timestamp(r.FND)
+        p = days.searchsorted(fnd)
+        idx = np.arange(p - t_lo - 1, p + t_hi + 1)
+        idx = idx[(idx >= 0) & (idx < len(days))]
+        d = days[idx]
+        e, n, tt = oi[k].reindex(d).diff(), oi[nxt[k]].reindex(d).diff(), total.reindex(d).diff()
+        t = idx - p
+        rows.append(pd.DataFrame({"y": r.y, "t": t, "exp": e.values, "nxt": n.values, "tot": tt.values}).iloc[1:])
+        md = days[(days.year == fnd.year) & (days.month == fnd.month)]
+        if len(md) >= 10:
+            wins.append((days.get_loc(md[4]) - p, days.get_loc(md[9]) - p))
+    long = pd.concat(rows) if rows else pd.DataFrame(columns=["y", "t", "exp", "nxt", "tot"])
+    long["oth"] = long["tot"] - long["exp"] - long["nxt"]
+    return long, wins
+
+
+def roll_chart(long: pd.DataFrame, wins: list, height: int = 400) -> go.Figure:
+    """Median day around FND: the expiring month's OI change (wine, down), what the next month
+    (teal) and every other month (indigo) took, and the whole market's net change (navy line):
+    where the line sits below zero, positions were closed rather than rolled."""
+    g = long.groupby("t")[["exp", "nxt", "oth", "tot"]].median().loc[-t_lo:t_hi] / 1e3
+    n = long.groupby("y").ngroups
+    fig = go.Figure()
+    for col, name, colr in (("exp", f"{month} (expiring)", "rgba(123,30,58,.55)"),
+                            ("nxt", f"{nxt_m} (next)", "rgba(44,143,157,.60)"),
+                            ("oth", "Other months", "rgba(99,102,241,.40)")):
+        fig.add_trace(go.Bar(x=g.index, y=g[col].round(1), name=name, marker_color=colr, marker_line_width=0,
+                             hovertemplate=f"T%{{x:+d}}  {name} <b>%{{y:+,.1f}}k</b><extra></extra>"))
+    fig.add_trace(go.Scatter(x=g.index, y=g["tot"].round(1), mode="lines+markers", name="Whole market (net)",
+                             line=dict(color=NAVY, width=2), marker=dict(size=4),
+                             hovertemplate="T%{x:+d}  whole market <b>%{y:+,.1f}k</b><extra></extra>"))
+    if wins:
+        a, b = int(np.median([w[0] for w in wins])), int(np.median([w[1] for w in wins]))
+        fig.add_vrect(x0=a - 0.5, x1=b + 0.5, fillcolor="rgba(234,88,12,.08)", line_width=0, layer="below")
+        fig.add_annotation(x=(a + b) / 2, y=1, yref="paper", yshift=12, showarrow=False,
+                           text="Index roll window (5th-10th business day)", font=dict(size=10, color="#c2410c"))
+    fig.add_hline(y=0, line=dict(color="rgba(10,36,99,0.3)", width=1))
+    fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
+    fig.add_annotation(x=0, y=1, yref="paper", yshift=-2, text="<b>FND</b>", showarrow=False, xanchor="left",
+                       xshift=4, font=dict(size=10, color=NAVY))
+    fig.update_layout(
+        height=height, margin=dict(t=34, b=60, l=50, r=16), barmode="relative", bargap=0.2, hovermode="x unified",
+        legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
+        xaxis=dict(range=[-t_lo - 0.5, t_hi + 0.5], tickformat="+d", dtick=5, showgrid=False, tickfont=AXIS_FONT,
+                   title=dict(text=f"Trading days to FND · median of {n} past {month} contracts",
+                              font=dict(size=10, color="#7a86a8"))),
+        yaxis=dict(title=dict(text="OI change ('000 lots a day)", font=dict(size=10, color="#7a86a8")),
+                   showgrid=True, gridcolor=GRID, zeroline=False, tickfont=dict(size=10, color="#7a86a8"),
+                   hoverformat="+,.1f"),
+        **_D)
+    return fig
+
+
+COT_PATH = Path(__file__).resolve().parent.parent / "Database" / "cot.parquet"
+COT_GROUPS = [("producer", "Producers / merchants", "rgba(201,138,31,.60)"),
+              ("swap", "Swap dealers", "rgba(44,143,157,.60)"),
+              ("mm", "Managed money", "rgba(123,30,58,.55)"),
+              ("other", "Other reportables", "rgba(99,102,241,.45)"),
+              ("nonrep", "Non-reportable", "rgba(138,148,168,.45)")]
+
+
+@st.cache_data(show_spinner=False)
+def load_cot(commodity: str, mtime: float = 0.0):
+    """Weekly COT for one market (copy kept by the builder's sync_cot), or None."""
+    if not COT_PATH.exists():
+        return None
+    c = pd.read_parquet(COT_PATH)
+    c = c[c["commodity"] == commodity]
+    return c.assign(Date=pd.to_datetime(c["Date"])).set_index("Date").sort_index() if len(c) else None
+
+
+@st.cache_data(show_spinner=False)
+def cot_by_week(commodity: str, month: str, mt: float, cmt: float):
+    """Weekly change in each trader group's share of open interest, by week relative to every
+    `month` contract's FND (0 = the report week holding FND). The groups add up to total OI, so
+    each bar says who the change in market OI came from. Past contracts are averaged; the live
+    contract's weeks so far are returned on their own."""
+    cot = load_cot(commodity, cmt)
+    if cot is None:
+        return None, None, 0
+    cols = [g for g, _, _ in COT_GROUPS] + ["oi"] + (["index_long"] if cot["index_long"].notna().any() else [])
+    d = cot[cols].diff()
+    df = load_data(commodity, mt)
+    asof = df["Date"].max()
+    info = df[df["month"] == month].groupby("ice_symbol").agg(FND=("FND", "first"), LTD=("LTD", "first"))
+    past, live = [], None
+    for k, r in info.iterrows():
+        wk = np.round((d.index - pd.Timestamp(r.FND)).days / 7).astype(int)
+        sel = (wk >= -6) & (wk <= 3)
+        if not sel.any():
+            continue
+        t = d[sel].assign(wk=wk[sel])
+        if r.LTD < asof:
+            past.append(t)
+        elif live is None and pd.Timestamp(r.FND) - asof < pd.Timedelta(days=60):
+            live = t.set_index("wk")
+    if not past:
+        return None, live, 0
+    allp = pd.concat(past)
+    return allp.groupby("wk")[cols].mean(), live, len(past)
+
+
+def cot_chart(mean: pd.DataFrame, live, n: int, height: int = 400) -> go.Figure:
+    """Stacked weekly OI change by trader group (average of past expiries), the market's net change
+    as a navy line, index long (CIT) as orange diamonds where the report exists, and the live
+    contract's weeks so far as open navy circles."""
+    m = mean / 1e3
+    fig = go.Figure()
+    for g, name, colr in COT_GROUPS:
+        fig.add_trace(go.Bar(x=m.index, y=m[g].round(1), name=name, marker_color=colr, marker_line_width=0,
+                             hovertemplate=f"week %{{x:+d}}  {name} <b>%{{y:+,.1f}}k</b><extra></extra>"))
+    fig.add_trace(go.Scatter(x=m.index, y=m["oi"].round(1), mode="lines+markers", name="Market OI (net)",
+                             line=dict(color=NAVY, width=2), marker=dict(size=5),
+                             hovertemplate="week %{x:+d}  market OI <b>%{y:+,.1f}k</b><extra></extra>"))
+    if "index_long" in m:
+        fig.add_trace(go.Scatter(x=m.index, y=m["index_long"].round(1), mode="markers", name="Index long (CIT)",
+                                 marker=dict(symbol="diamond", size=9, color="#ea580c", line=dict(color="#ffffff", width=1)),
+                                 hovertemplate="week %{x:+d}  index long <b>%{y:+,.1f}k</b><extra></extra>"))
+    if live is not None and len(live):
+        lv = live["oi"].dropna() / 1e3
+        fig.add_trace(go.Scatter(x=lv.index, y=lv.round(1), mode="markers", name=f"{cur_lbl} so far (market OI)",
+                                 marker=dict(symbol="circle-open", size=11, color=NAVY, line=dict(width=2)),
+                                 hovertemplate=f"week %{{x:+d}}  {cur_lbl} market OI <b>%{{y:+,.1f}}k</b><extra></extra>"))
+    fig.add_hline(y=0, line=dict(color="rgba(10,36,99,0.3)", width=1))
+    fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
+    fig.update_layout(
+        height=height, margin=dict(t=24, b=60, l=50, r=16), barmode="relative", bargap=0.3, hovermode="x unified",
+        legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
+        xaxis=dict(tickvals=list(range(-6, 4)), ticktext=[("FND wk" if w == 0 else f"{w:+d}") for w in range(-6, 4)],
+                   showgrid=False, tickfont=AXIS_FONT,
+                   title=dict(text=f"Weeks to FND (COT, Tuesday) · average of {n} past {month} contracts",
+                              font=dict(size=10, color="#7a86a8"))),
+        yaxis=dict(title=dict(text="Weekly OI change ('000 lots)", font=dict(size=10, color="#7a86a8")),
+                   showgrid=True, gridcolor=GRID, zeroline=False, tickfont=dict(size=10, color="#7a86a8"),
+                   hoverformat="+,.1f"),
+        **_D)
+    return fig
 
 
 def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360, ranges: bool = False) -> go.Figure:
@@ -1585,6 +1743,19 @@ elif view == "Daily Flow":
         with c[1]:
             lbl(f"Certs, {what}", f"{u_}{sfx}")
             chart(flow_chart(cd, f"Certs {'change ' if chg else ''}({u_})", "+,.1f" if chg else ",.0f", ranges=True))
+
+elif view == "Roll & Positioning":
+    # Daily, per contract: where the expiring month's open interest goes (rolled or closed)
+    lbl(f"Roll · where {month}'s open interest goes", "'000 lots a day, median day")
+    chart(roll_chart(*roll_flow(comm, month, t_lo, t_hi, mt)))
+    # Weekly, whole market (COT): which trader groups the change in open interest came from
+    cmt_cot = COT_PATH.stat().st_mtime if COT_PATH.exists() else 0.0
+    mean_w, live_w, n_w = cot_by_week(comm, month, mt, cmt_cot)
+    lbl("COT · who changes open interest around FND", "weekly, all months together, '000 lots")
+    if mean_w is None:
+        st.info("No COT data for this market.")
+    else:
+        chart(cot_chart(mean_w, live_w, n_w))
 
 else:
     unit_c = cfg["unit"]
