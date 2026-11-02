@@ -746,7 +746,7 @@ def expiry_heatmap(pts, col, fmt, cs, suffix="", diverging=False):
         rng = dict(zmin=float(vals.quantile(0.05)), zmax=float(vals.quantile(0.95)))
     fig = go.Figure(go.Heatmap(
         z=piv.values, x=list(piv.columns), y=[str(y) for y in piv.index], text=text.values,
-        texttemplate="%{text}", textfont=dict(size=10.5, color="#111111"), colorscale=cs,
+        texttemplate="<b>%{text}</b>", textfont=dict(size=11.5, color="#111111"), colorscale=cs,
         showscale=False, xgap=3, ygap=3, hovertemplate="%{x}%{y}  <b>%{text}</b><extra></extra>", **rng))
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=len(piv) - 1.5, y1=len(piv) - 1.5,
                   line=dict(color="rgba(10,36,99,.35)", width=1.2))
@@ -796,8 +796,8 @@ def bar_heatmap(pts, col, fmt) -> go.Figure:
     fig.add_trace(go.Scatter(x=cx, y=cy, mode="lines", line=dict(color="rgba(10,36,99,.14)", width=1),
                              hoverinfo="skip", showlegend=False))
     fig.add_trace(go.Scatter(x=jj[ok], y=ii[ok], mode="text", text=txt[ok], customdata=keys[ok],
-                             textfont=dict(size=10.5, color="#111111", family="Plus Jakarta Sans, sans-serif"),
-                             texttemplate="%{text}", showlegend=False,
+                             textfont=dict(size=11.5, color="#111111", family="Plus Jakarta Sans, sans-serif"),
+                             texttemplate="<b>%{text}</b>", showlegend=False,
                              hovertemplate="%{customdata}  <b>%{text}</b><extra></extra>"))
     fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=nr - 1.5, y1=nr - 1.5,
                   line=dict(color="rgba(10,36,99,.35)", width=1.2))
@@ -823,7 +823,7 @@ SP_CSS = """<style>
 .sp-tbl { width:100%; table-layout:fixed; }
 .sp-tbl th:first-child { width:34px; }
 .sp-tbl td { position:relative; height:21px; padding:0; border:0; background:#f4f6fb; overflow:hidden;
-  text-align:center; font-size:10.5px; color:#111111; white-space:nowrap; }
+  text-align:center; font-size:11.5px; font-weight:700; color:#111111; white-space:nowrap; }
 .sp-tbl td .bar { position:absolute; top:4px; bottom:4px; }
 .sp-tbl td .mid { position:absolute; left:50%; top:2px; bottom:2px; width:1px; background:rgba(10,36,99,.14); }
 .sp-tbl td .v { position:relative; z-index:1; }
@@ -1620,8 +1620,8 @@ else:
             pts = pts[pts["y"] >= pts["y"].max() - 9]           # Avg rows follow the years shown
         grids = [
             # (title, unit, column, cell format, chart builder, hover series, series label, series format, suffix, style, rebase)
-            (f"OI {_tl(t_chk)}", "'000 lots", "oi_k", ",.1f", lambda: expiry_heatmap(pts, "oi_k", ",.1f", GRID_CS),
-             "open_interest", "open interest ('000 lots)", ",.1f", "", "heat", False),
+            (f"OI {_tl(t_chk)}", "'000 lots", "oi_k", ",.1f", lambda: expiry_heatmap(pts, "oi_k", ",.1f", RET_CS),
+             "open_interest", "open interest ('000 lots)", ",.1f", "", "heat_rt", False),
             ("OI change", "'000 lots", "oichg_k", "+,.1f", lambda: bar_heatmap(pts, "oichg_k", "+,.1f"),
              "open_interest", "open interest ('000 lots)", ",.1f", "", "bar", False),
             (f"Certs level {_tl(t_chk)}", u_lbl, "level_show", ",.0f", lambda: expiry_heatmap(pts, "level_show", ",.0f", RET_CS),
