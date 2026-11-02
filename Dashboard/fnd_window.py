@@ -672,22 +672,35 @@ def _live_marks(fig, piv, pts) -> None:
                           line=dict(color="#ea580c", width=1.6, dash="dot"))
 
 
-def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360) -> go.Figure:
+def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360, ranges: bool = False) -> go.Figure:
     """Day-by-day bars against trading days to FND: the median past expiry on each day
     (teal up, wine down) with a 25-75% whisker, and the live contract's own days as
     navy diamonds. Real readings only: a day a contract has no data is left out."""
     hy = [y for y in hist_years if y in daily]
     hist = daily[hy]
     n = hist.notna().sum(axis=1)
-    q = hist.quantile([0.25, 0.5, 0.75], axis=1).T[n >= 3].round(1)
+    q = hist.quantile([0.1, 0.25, 0.5, 0.75, 0.9], axis=1).T[n >= 3].round(2)
     med = q[0.5]
-    fig = go.Figure(go.Bar(
-        x=med.index, y=med.values, name=f"Median of {len(hy)} past", marker_line_width=0,
-        marker_color=["rgba(44,143,157,.55)" if v >= 0 else "rgba(123,30,58,.45)" for v in med.values],
-        error_y=dict(type="data", symmetric=False, array=(q[0.75] - med).values, arrayminus=(med - q[0.25]).values,
-                     color="rgba(10,36,99,.28)", thickness=1, width=2),
-        customdata=np.stack([q[0.25].values, q[0.75].values], axis=1),
-        hovertemplate=f"T%{{x:+d}}  median <b>%{{y:{fmt}}}</b>  (25-75%: %{{customdata[0]:{fmt}}} to %{{customdata[1]:{fmt}}})<extra></extra>"))
+    fig = go.Figure()
+    if ranges:
+        # Moves that go both ways (spread, certs): a day's median is ~0 and says nothing about size,
+        # so show the usual range instead: 10-90% light, 25-75% darker, median as a tick
+        for lo, hi, col, nm in ((0.1, 0.9, "rgba(99,102,241,.16)", "10-90% of past"),
+                                (0.25, 0.75, "rgba(99,102,241,.38)", "25-75% of past")):
+            fig.add_trace(go.Bar(x=q.index, y=(q[hi] - q[lo]).values, base=q[lo].values, name=nm, marker_color=col,
+                                 marker_line_width=0, customdata=np.stack([q[lo].values, q[hi].values], axis=1),
+                                 hovertemplate=f"T%{{x:+d}}  {nm[:5]} <b>%{{customdata[0]:{fmt}}} to %{{customdata[1]:{fmt}}}</b><extra></extra>"))
+        fig.add_trace(go.Scatter(x=med.index, y=med.values, mode="markers", name="Median of past",
+                                 marker=dict(symbol="line-ew", size=11, line=dict(color="#4f46e5", width=2)),
+                                 hovertemplate=f"T%{{x:+d}}  median <b>%{{y:{fmt}}}</b><extra></extra>"))
+    else:
+        fig.add_trace(go.Bar(
+            x=med.index, y=med.values, name=f"Median of {len(hy)} past", marker_line_width=0,
+            marker_color=["rgba(44,143,157,.55)" if v >= 0 else "rgba(123,30,58,.45)" for v in med.values],
+            error_y=dict(type="data", symmetric=False, array=(q[0.75] - med).values, arrayminus=(med - q[0.25]).values,
+                         color="rgba(10,36,99,.28)", thickness=1, width=2),
+            customdata=np.stack([q[0.25].values, q[0.75].values], axis=1),
+            hovertemplate=f"T%{{x:+d}}  median <b>%{{y:{fmt}}}</b>  (25-75%: %{{customdata[0]:{fmt}}} to %{{customdata[1]:{fmt}}})<extra></extra>"))
     cur = daily[cur_year].dropna().round(1) if cur_year in daily else pd.Series(dtype=float)
     if len(cur):
         fig.add_trace(go.Scatter(x=cur.index, y=cur.values, mode="markers", name=f"{cur_lbl} (live)",
@@ -701,7 +714,7 @@ def flow_chart(daily: pd.DataFrame, y_title: str, fmt: str, height: int = 360) -
         fig.add_annotation(x=med_ltd, y=1, yref="paper", yshift=12, text="LTD", showarrow=False,
                            font=dict(size=10, color="#7a86a8"))
     fig.update_layout(
-        height=height, margin=dict(t=30, b=60, l=50, r=16), hovermode="closest", bargap=0.25,
+        height=height, margin=dict(t=30, b=60, l=50, r=16), hovermode="closest", bargap=0.25, barmode="overlay",
         legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
         xaxis=dict(range=[-t_lo - 0.5, t_hi + 0.5], tickformat="+d", dtick=5, showgrid=False, tickfont=AXIS_FONT,
                    title=dict(text="Trading days to FND", font=dict(size=10, color="#7a86a8"))),
@@ -1493,10 +1506,15 @@ if view == "FND Window":
         oi_plot, oi_fmt, oi_suf, oi_title = oi.div(from_start(oi, -t_lo)) * 100, ".1f", "%", f"% of OI at T-{t_lo}"
     else:
         oi_plot, oi_fmt, oi_suf, oi_title = oi, ",.0f", "", "Lots"
-    # Expiring month's share of the two legs' volume, 3-session sums to calm single days
+    # Expiring month's volume share, 3-session sums to calm single days
     al = al.sort_values(["year", "Date"])
     roll3 = lambda c: al.groupby("year")[c].transform(lambda s: s.rolling(3, min_periods=1).sum())
-    al["vol_share"] = roll3("volume") / (roll3("volume") + roll3("next_vol")) * 100
+    # Share of the whole market's futures volume (every listed month that day). Before the earliest
+    # stored contract's LTD the board is incomplete, so those dates have no total and no share.
+    mkt = raw.groupby("Date")["volume"].sum()
+    mkt[mkt.index < raw.groupby("ice_symbol")["LTD"].first().min()] = np.nan
+    al["mkt_vol"] = al["Date"].map(mkt)
+    al["vol_share"] = roll3("volume") / roll3("mkt_vol") * 100
     vs_plot = to_matrix(al, "vol_share", -t_lo, t_hi)
 
     rx = rollex_aligned(comm, month, mt, _rollex_mtime())
@@ -1519,8 +1537,8 @@ if view == "FND Window":
         lbl("Open interest change", f"{since}, '000 lots")
         chart(band_chart(oi_k - from_start(oi_k, -t_lo), "Change in OI ('000 lots)", "+,.1f", zero_line=True, height=H))
     with c[2]:
-        lbl(f"Volume share · {month} vs {nxt_m}", "3-session sums")
-        chart(band_chart(vs_plot, f"{month} share of volume", ".0f", "%", tozero=True, height=H))
+        lbl(f"Volume share · {month} of whole market", "3-session sums, all months")
+        chart(band_chart(vs_plot, f"{month} share of market volume", ".0f", "%", tozero=True, height=H))
 
     # Price: the spread's level, its move, and the outright
     c = st.columns(3, gap="medium")
@@ -1570,13 +1588,13 @@ elif view == "Daily Flow":
     c = st.columns(2, gap="medium")
     with c[0]:
         lbl(f"Spread, daily change · {month} minus {nxt_m}", "price units a day")
-        chart(flow_chart(sp_d, "Spread change", "+,.2f"))
+        chart(flow_chart(sp_d, "Spread change", "+,.2f", ranges=True))
     if certs is not None:
         sc_, u_ = (1e3, "'000 bags") if cfg["unit"] == "bags" else (1.0, "lots")
         cd = certs_around(comm, month, t_lo + 1, t_hi, None, mt, cfg["path"].stat().st_mtime).diff().loc[-t_lo:] / sc_
         with c[1]:
             lbl("Certs, daily change", f"{u_} a day")
-            chart(flow_chart(cd, f"Certs change ({u_})", "+,.1f"))
+            chart(flow_chart(cd, f"Certs change ({u_})", "+,.1f", ranges=True))
 
 else:
     unit_c = cfg["unit"]
