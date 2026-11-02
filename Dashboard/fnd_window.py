@@ -546,18 +546,13 @@ t_lo, t_hi, unit = 40, 20, "% of start"
 t_chk, t_exit = -5, -1
 with sb_ctl:
     st.markdown("---")
-    if view in ("FND Window", "Study"):
-        if view == "Study":
-            st.markdown("<div class='sb-lbl'>Live window</div>", unsafe_allow_html=True)
-        t_lo = pill("t_lo", "Days before FND", [20, 40, 60, 80], 40)
-        t_hi = pill("t_hi", "Days after FND", [0, 10, 20, 30], 20)
     if view == "FND Window":
+        # Kept under their own keys so the values survive switching views
+        t_lo = st.slider("Days before FND", 10, 80, st.session_state.get("t_lo_n", 40), 5, key="w_t_lo")
+        t_hi = st.slider("Days after FND", 0, 30, st.session_state.get("t_hi_n", 20), key="w_t_hi")
+        st.session_state["t_lo_n"], st.session_state["t_hi_n"] = t_lo, t_hi
         unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
     else:
-        if view == "Study":
-            st.markdown("---")
-            st.markdown("<div class='sb-lbl'>History window</div>", unsafe_allow_html=True)
-        # Kept under their own keys so the values survive switching views
         n_chk = st.slider("Certs measured at (days before FND)", 1, 80,
                           st.session_state.get("t_chk_n", 5), key=f"w_t_chk_{view}")
         n_exit = st.slider("Spread move ends at (days before FND)", 0, 40,
@@ -604,8 +599,10 @@ def band_chart(plot: pd.DataFrame, y_title: str, y_fmt: str, y_suf: str = "",
     hy = [y for y in hist_years if y in plot]
     hist = plot[hy]
     n = hist.notna().sum(axis=1)
-    q = hist.quantile([0.1, 0.25, 0.5, 0.75, 0.9], axis=1).T[n >= 3]
-    lo_, hi_ = hist.min(axis=1)[n >= 3], hist.max(axis=1)[n >= 3]
+    # Values go to the chart at one decimal: the unified hover reads the data, not the hovertemplate
+    q = hist.quantile([0.1, 0.25, 0.5, 0.75, 0.9], axis=1).T[n >= 3].round(1)
+    lo_, hi_ = hist.min(axis=1)[n >= 3].round(1), hist.max(axis=1)[n >= 3].round(1)
+    plot = plot.round(1)
     x = q.index
     hf = ("+" if y_fmt.startswith("+") else "") + ",.1f"      # hover always shows one decimal
     hv = lambda nm: f"{nm} <b>%{{y:{hf}}}{y_suf}</b><extra></extra>"
@@ -643,6 +640,7 @@ def band_chart(plot: pd.DataFrame, y_title: str, y_fmt: str, y_suf: str = "",
         fig.add_vline(x=med_ltd, line=dict(color="rgba(10,36,99,0.18)", width=1, dash="dot"))
         fig.add_annotation(x=med_ltd, y=1, yref="paper", yshift=12, text="LTD", showarrow=False,
                            font=dict(size=10, color="#7a86a8"))
+    fig.update_traces(yhoverformat=("+" if y_fmt.startswith("+") else "") + ",.1f")
     fig.update_layout(
         height=height, margin=dict(t=30, b=60, l=50, r=16), hovermode="x unified",
         legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
@@ -1397,7 +1395,7 @@ def certs_points(commodity: str, t_chk: int, t_exit: int, mt: float, cmt: float)
 def certs_around(commodity: str, month: str, t_lo: int, t_hi: int, t_base: int,
                  mt: float, cmt: float) -> pd.DataFrame:
     """t x delivery-year grid of certified stock around each `month` contract's
-    FND, as the change in stock since T`t_base`. Certs keep printing after the
+    FND: the level, or with t_base the change in stock since T`t_base`. Certs keep printing after the
     contract expires, so this runs the full window."""
     certs = load_certs(commodity, cmt)
     days = market_calendar(commodity, mt)
@@ -1411,7 +1409,7 @@ def certs_around(commodity: str, month: str, t_lo: int, t_hi: int, t_base: int,
         vals[(dates < certs.index[0]) | (dates > certs.index[-1])] = np.nan
         cols[y] = pd.Series(vals, index=ts[ok])
     piv = pd.DataFrame(cols).reindex(ts)
-    return piv - from_start(piv, t_base)
+    return piv if t_base is None else piv - from_start(piv, t_base)
 
 
 # ── Views ─────────────────────────────────────────────────────────────────────
@@ -1427,26 +1425,60 @@ if view == "FND Window":
     al["vol_share"] = roll3("volume") / (roll3("volume") + roll3("next_vol")) * 100
     vs_plot = to_matrix(al, "vol_share", -t_lo, t_hi)
 
-    r1 = st.columns(2, gap="medium")
-    with r1[0]:
-        lbl(f"Open interest left · {cur_lbl}", past_note)
-        chart(band_chart(oi_plot, oi_title, oi_fmt, oi_suf, tozero=True))
-    with r1[1]:
-        lbl(f"Spread · {month} minus {nxt_m}", "price units")
-        chart(band_chart(sp_plot, "Price difference", "+,.2f", zero_line=True))
-    r2 = st.columns(2, gap="medium")
-    with r2[0]:
-        lbl(f"Volume share · {month} vs {nxt_m}", "3-session sums")
-        chart(band_chart(vs_plot, f"{month} share of volume", ".0f", "%", tozero=True))
     rx = rollex_aligned(comm, month, mt, _rollex_mtime())
+    rx_plot = None
     if len(rx):
         rp = to_matrix(rx, "ret", -t_lo, t_hi, ffill=0)
         rp.loc[-t_lo, rp.columns[rp.notna().any()]] = 0.0     # performance measured from the window start
         live = rp.notna()
         rx_plot = ((1 + rp.fillna(0)).cumprod() - 1).where(live.cummax() & live[::-1].cummax()[::-1]) * 100
-        with r2[1]:
-            lbl(f"Price · Rollex since T-{t_lo}", "roll-adjusted")
-            chart(band_chart(rx_plot, "Return", "+.1f", "%", zero_line=True))
+    since = f"since T-{t_lo}"
+    H = 360
+
+    # Open interest: what is left, how much has gone, and whether trading has moved on
+    c = st.columns(3, gap="medium")
+    with c[0]:
+        lbl(f"Open interest · {cur_lbl}", past_note)
+        chart(band_chart(oi_plot, oi_title, oi_fmt, oi_suf, tozero=True, height=H))
+    with c[1]:
+        oi_k = oi / 1e3
+        lbl("Open interest change", f"{since}, '000 lots")
+        chart(band_chart(oi_k - from_start(oi_k, -t_lo), "Change in OI ('000 lots)", "+,.1f", zero_line=True, height=H))
+    with c[2]:
+        lbl(f"Volume share · {month} vs {nxt_m}", "3-session sums")
+        chart(band_chart(vs_plot, f"{month} share of volume", ".0f", "%", tozero=True, height=H))
+
+    # Price: the spread's level, its move, and the outright
+    c = st.columns(3, gap="medium")
+    with c[0]:
+        lbl(f"Spread · {month} minus {nxt_m}", "price units")
+        chart(band_chart(sp_plot, "Price difference", "+,.2f", zero_line=True, height=H))
+    with c[1]:
+        lbl("Spread change", f"{since}, price units")
+        chart(band_chart(sp_plot - from_start(sp_plot, -t_lo), "Change in spread", "+,.2f", zero_line=True, height=H))
+    if rx_plot is not None:
+        with c[2]:
+            lbl(f"Price · Rollex {since}", "roll-adjusted, %")
+            chart(band_chart(rx_plot, "Return", "+.1f", "%", zero_line=True, height=H))
+
+    # Certs (KC / RC): the stock, its move, and how much open interest sits on it
+    if certs is not None:
+        unit_c = cfg["unit"]
+        cmt = cfg["path"].stat().st_mtime
+        sc, u_lbl = (1e3, "'000 bags") if unit_c == "bags" else (1.0, "lots")
+        c = st.columns(3, gap="medium")
+        with c[0]:
+            lbl(f"Certs · {cur_lbl}", u_lbl)
+            chart(band_chart(certs_around(comm, month, t_lo, t_hi, None, mt, cmt) / sc,
+                             f"Certs ({u_lbl})", ",.0f", height=H))
+        with c[1]:
+            lbl("Certs change", f"{since}, {u_lbl}")
+            chart(band_chart(certs_around(comm, month, t_lo, t_hi, -t_lo, mt, cmt) / sc,
+                             f"Change in certs ({u_lbl})", "+,.0f", zero_line=True, height=H))
+        with c[2]:
+            lbl("Open positions ÷ certs", "to FND")
+            cv_plot = to_matrix(al, "cover", -t_lo, t_hi).loc[:0]     # past FND the month is all but closed
+            chart(band_chart(cv_plot, f"Open {unit_c} ÷ certified {unit_c}", ".0f", "×", tozero=True, x_max=0, height=H))
 
 else:
     unit_c = cfg["unit"]
@@ -1463,23 +1495,9 @@ else:
 
     if view == "Study":
         pts = pts[~pts["live"]]                                  # the study is about finished expiries
-        name_c = cfg["name"]
         # Live contract's certs change so far, from its own T`t_chk` reading to today
         cur_rows = al[(al["year"] == cur_year) & (al["t"] == t_chk)]
         now_c = (certs.iloc[-1] - certs.asof(cur_rows["Date"].iloc[0])) / sc if len(cur_rows) else np.nan
-
-        st.markdown(f"<div class='pt-head'><span class='pt-title'>Live · {cur_lbl}"
-                    f"<span class='pt-sub'>{name_c} certs going into {MONTH_NAMES[month]} FND</span></span></div>",
-                    unsafe_allow_html=True)
-        c = st.columns(2, gap="medium")
-        with c[0]:
-            lbl(f"Open positions ÷ certs · {cur_lbl}", past_note)
-            cv_plot = to_matrix(al, "cover", -t_lo, t_hi).loc[:0]     # past FND the month is all but closed
-            chart(band_chart(cv_plot, f"Open {unit_c} ÷ certified {unit_c}", ".0f", "×", tozero=True, x_max=0))
-        with c[1]:
-            lbl(f"Certs around {MONTH_NAMES[month]} FND", f"change since T-{t_lo}, {u_lbl}")
-            chart(band_chart(certs_around(comm, month, t_lo, t_hi, -t_lo, mt, cmt) / sc,
-                             f"Change in certs ({u_lbl})", "+,.0f", zero_line=True))
 
         st.markdown(f"<div class='pt-head'><span class='pt-title'>Certs flow by contract month"
                     f"<span class='pt-sub'>{win} · every past expiry</span></span></div>", unsafe_allow_html=True)
