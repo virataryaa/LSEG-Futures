@@ -61,8 +61,11 @@ back to 2011.
   - *Daily Flow*: day-by-day range bars (min-max, 10-90%, 25-75%, median) of OI, volume,
     spread and certs, switchable between daily change and level; live days as diamonds.
   - *Roll & Positioning*: where the expiring month's OI goes each day (next month, other
-    months, or closed) with the index roll window marked; and COT weekly OI change by trader
-    group around FND, with index long (CIT) where it exists.
+    months, or closed) with the index roll window marked.
+  - *COT Link*: weekly change in the chosen positions (any trader group long, short or net)
+    around FND as violins, one plot each, in '000 lots or % of the prior week's total OI; history from the chosen contract month or all months
+    pooled. Long and short are outright, as reported, spreads apart. Below, a year x
+    ISO-week matrix of one position with Avg / Std / ICV.
   - *Comprehensive View* (KC / RC): year x contract-month grids of OI, OI change, certs
     level, certs change, spread move and Rollex move over a chosen window, an Avg row, and an
     **Activate Hover** focus mode (every cell opens its chart, clicks pin up to six,

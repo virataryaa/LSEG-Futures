@@ -455,7 +455,8 @@ COT_PATH = DB_DIR / "cot.parquet"
 def sync_cot() -> int:
     """Refresh Database/cot.parquet from the COT_ALL project: weekly open interest split by trader
     group as each group's share of OI ((long + short + 2 x spread) / 2, so the groups add up to
-    total OI), managed-money net, and index long from the CIT report (US markets only). A copy,
+    total OI), managed-money net, each group's outright long and short as reported (spreads
+    apart), and index long and short from the CIT report (US markets only). A copy,
     not a source, for the FND Window app. Never raises, rewrites only on change."""
     try:
         dg = pd.read_parquet(COT_SRC / "cot_disagg_fut.parquet")
@@ -469,11 +470,14 @@ def sync_cot() -> int:
             "mm": (f("MM Long") + f("MM Short")) / 2 + f("MM Spread"),
             "other": (f("Other Long") + f("Other Short")) / 2 + f("Other Spread"),
             "nonrep": (f("Non Rep Long") + f("Non Rep Short")) / 2,
-            "mm_net": f("MM Long") - f("MM Short")})
+            "mm_net": f("MM Long") - f("MM Short"),
+            **{f"{g}_{leg.lower()}": f(f"{src} {leg}")
+                for g, src in (("producer", "Producer"), ("swap", "Swap"), ("mm", "MM"), ("other", "Other"), ("nonrep", "Non Rep"))
+                for leg in ("Long", "Short")}})
         cit_p = COT_SRC / "cot_cit.parquet"
         if cit_p.exists():
-            cit = pd.read_parquet(cit_p, columns=["Commodity", "Date", "Index Long"])
-            cit = cit.rename(columns={"Commodity": "commodity", "Index Long": "index_long"})
+            cit = pd.read_parquet(cit_p, columns=["Commodity", "Date", "Index Long", "Index Short"])
+            cit = cit.rename(columns={"Commodity": "commodity", "Index Long": "index_long", "Index Short": "index_short"})
             cit["Date"] = pd.to_datetime(cit["Date"])
             out = out.merge(cit, on=["commodity", "Date"], how="left")
         out = out.sort_values(["commodity", "Date"]).reset_index(drop=True)

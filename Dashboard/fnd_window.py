@@ -7,6 +7,7 @@ each year still lines up. First visual: the expiring month's OI liquidation
 curve, one line per year, a percentile band across history and the live
 contract on top — "are we rolling faster or slower than usual".
 """
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -527,7 +528,7 @@ cfg = CERTS.get(comm)
 certs = load_certs(comm, cfg["path"].stat().st_mtime) if cfg and cfg["path"].exists() else None
 
 # ── Navigation ────────────────────────────────────────────────────────────────
-VIEWS = ["FND Window", "Daily Flow", "Roll & Positioning"] + (["Comprehensive View", "Study"]
+VIEWS = ["FND Window", "Daily Flow", "Roll & Positioning", "COT Link"] + (["Comprehensive View", "Study"]
                           if certs is not None else [])
 _v = st.session_state.get("view_store", VIEWS[0])
 if "rh_on" not in st.session_state:
@@ -560,6 +561,7 @@ st.markdown("<div class='ctl-gap'></div>", unsafe_allow_html=True)
 # ── Controls: in the sidebar, only what the open view uses ─────────────────────
 t_lo, t_hi, unit, flow_mode = 40, 20, "% of start", "Daily change"
 t_chk, t_exit = -5, -1
+cot_scope = "Contract month"
 with sb_ctl:
     st.markdown("---")
     if view in ("FND Window", "Daily Flow", "Roll & Positioning"):
@@ -571,6 +573,8 @@ with sb_ctl:
             unit = pill("unit", "Open interest as", ["% of start", "Lots"], "% of start")
         elif view == "Daily Flow":
             flow_mode = pill("flow_mode", "Bars show", ["Daily change", "Level"], "Daily change")
+    elif view == "COT Link":
+        cot_scope = pill("cot_scope", "History", ["Contract month", "All months"], "Contract month")
     elif view == "Study":
         t_chk, t_exit = window_sliders()
 if t_exit <= t_chk:
@@ -752,11 +756,13 @@ def roll_chart(long: pd.DataFrame, wins: list, height: int = 400) -> go.Figure:
 
 
 COT_PATH = Path(__file__).resolve().parent.parent / "Database" / "cot.parquet"
-COT_GROUPS = [("producer", "Producers / merchants", "rgba(201,138,31,.60)"),
+COT_GROUPS = [("producer", "Producers", "rgba(201,138,31,.60)"),
               ("swap", "Swap dealers", "rgba(44,143,157,.60)"),
               ("mm", "Managed money", "rgba(123,30,58,.55)"),
               ("other", "Other reportables", "rgba(99,102,241,.45)"),
               ("nonrep", "Non-reportable", "rgba(138,148,168,.45)")]
+COT_INDEX = ("index", "Index (CIT)", "rgba(234,88,12,.55)")
+COT_WK_LO, COT_WK_HI = -13, 8       # weeks kept around FND: about a quarter before, two months after
 
 
 @st.cache_data(show_spinner=False)
@@ -770,69 +776,147 @@ def load_cot(commodity: str, mtime: float = 0.0):
 
 
 @st.cache_data(show_spinner=False)
-def cot_by_week(commodity: str, month: str, mt: float, cmt: float):
-    """Weekly change in each trader group's share of open interest, by week relative to every
-    `month` contract's FND (0 = the report week holding FND). The groups add up to total OI, so
-    each bar says who the change in market OI came from. Past contracts are averaged; the live
-    contract's weeks so far are returned on their own."""
+def cot_changes(commodity: str, pct: bool, cmt: float):
+    """Weekly change in each trader group's long, short and net position (columns like mm_net), in '000
+    lots or, with `pct`, as % of the previous report's total open interest. None without COT data."""
     cot = load_cot(commodity, cmt)
     if cot is None:
-        return None, None, 0
-    cols = [g for g, _, _ in COT_GROUPS] + ["oi"] + (["index_long"] if cot["index_long"].notna().any() else [])
-    d = cot[cols].diff()
+        return None
+    gs = [g for g, _, _ in COT_GROUPS] + (["index"] if cot["index_long"].notna().any() else [])
+    lv = lambda g, side: cot[f"{g}_{side}"].astype("float64")
+    d = pd.DataFrame({f"{g}_{side}": lv(g, "long") - lv(g, "short") if side == "net" else lv(g, side)
+                      for g in gs for side in ("net", "long", "short")}).diff()
+    return d.div(cot["oi"].astype("float64").shift(1), axis=0) * 100 if pct else d / 1e3
+
+
+@st.cache_data(show_spinner=False)
+def cot_by_week(commodity: str, month: str | None, pct: bool, mt: float, cmt: float):
+    """Every `month` contract's weeks around its FND (0 = the report week holding FND), or every contract
+    of every month pooled when `month` is None: the changes from cot_changes. Past contracts come back long; the nearest live contract's weeks so far are returned on
+    their own, with its label."""
+    d = cot_changes(commodity, pct, cmt)
+    if d is None:
+        return None, None, "", 0
     df = load_data(commodity, mt)
     asof = df["Date"].max()
-    info = df[df["month"] == month].groupby("ice_symbol").agg(FND=("FND", "first"), LTD=("LTD", "first"))
-    past, live = [], None
+    src = df if month is None else df[df["month"] == month]
+    info = src.groupby("ice_symbol").agg(FND=("FND", "first"), LTD=("LTD", "first"), m=("month", "first")).sort_values("FND")
+    past, live, live_lbl = [], None, ""
     for k, r in info.iterrows():
         wk = np.round((d.index - pd.Timestamp(r.FND)).days / 7).astype(int)
-        sel = (wk >= -6) & (wk <= 3)
+        sel = (wk >= COT_WK_LO) & (wk <= COT_WK_HI)
         if not sel.any():
             continue
-        t = d[sel].assign(wk=wk[sel])
+        t = d[sel].assign(wk=wk[sel], sym=k)
         if r.LTD < asof:
             past.append(t)
-        elif live is None and pd.Timestamp(r.FND) - asof < pd.Timedelta(days=60):
-            live = t.set_index("wk")
+        elif live is None and pd.Timestamp(r.FND) - asof < pd.Timedelta(weeks=-COT_WK_LO + 1):
+            live, live_lbl = t.set_index("wk"), f"{r.m}{r.LTD.year % 100:02d}"
     if not past:
-        return None, live, 0
-    allp = pd.concat(past)
-    return allp.groupby("wk")[cols].mean(), live, len(past)
+        return None, live, live_lbl, 0
+    return pd.concat(past), live, live_lbl, len(past)
 
 
-def cot_chart(mean: pd.DataFrame, live, n: int, height: int = 400) -> go.Figure:
-    """Stacked weekly OI change by trader group (average of past expiries), the market's net change
-    as a navy line, index long (CIT) as orange diamonds where the report exists, and the live
-    contract's weeks so far as open navy circles."""
-    m = mean / 1e3
-    fig = go.Figure()
-    for g, name, colr in COT_GROUPS:
-        fig.add_trace(go.Bar(x=m.index, y=m[g].round(1), name=name, marker_color=colr, marker_line_width=0,
-                             hovertemplate=f"week %{{x:+d}}  {name} <b>%{{y:+,.1f}}k</b><extra></extra>"))
-    fig.add_trace(go.Scatter(x=m.index, y=m["oi"].round(1), mode="lines+markers", name="Market OI (net)",
-                             line=dict(color=NAVY, width=2), marker=dict(size=5),
-                             hovertemplate="week %{x:+d}  market OI <b>%{y:+,.1f}k</b><extra></extra>"))
-    if "index_long" in m:
-        fig.add_trace(go.Scatter(x=m.index, y=m["index_long"].round(1), mode="markers", name="Index long (CIT)",
-                                 marker=dict(symbol="diamond", size=9, color="#ea580c", line=dict(color="#ffffff", width=1)),
-                                 hovertemplate="week %{x:+d}  index long <b>%{y:+,.1f}k</b><extra></extra>"))
-    if live is not None and len(live):
-        lv = live["oi"].dropna() / 1e3
-        fig.add_trace(go.Scatter(x=lv.index, y=lv.round(1), mode="markers", name=f"{cur_lbl} so far (market OI)",
-                                 marker=dict(symbol="circle-open", size=11, color=NAVY, line=dict(width=2)),
-                                 hovertemplate=f"week %{{x:+d}}  {cur_lbl} market OI <b>%{{y:+,.1f}}k</b><extra></extra>"))
+def cot_violin_chart(past: pd.DataFrame, live, live_lbl: str, c: str, nm: str, colr: str, wk_lo: int, wk_hi: int,
+                     y_rng: list, suf: str, y_title: str, height: int = 380) -> go.Figure:
+    """One position's weekly change around FND: a violin per week across past expiries (box: median and
+    25-75%, dots: each contract), the live contract's weeks so far as a wine line, on a range shared
+    by the plots."""
+    solid = re.sub(r"[\d.]+\)$", "1)", colr)
+    d = past[past["wk"].between(wk_lo, wk_hi)].dropna(subset=[c])
+    fig = go.Figure(go.Violin(x=d["wk"], y=d[c].round(2), name=nm, width=0.85, spanmode="hard",
+                              points="all", pointpos=0, jitter=0.3, marker=dict(size=4, color=solid, line=dict(width=0)),
+                              fillcolor=colr, line=dict(color=solid, width=1), box=dict(visible=True, width=0.25),
+                              meanline=dict(visible=False), hoverinfo="y"))
+    if live is not None:
+        s_ = live.loc[(live.index >= wk_lo) & (live.index <= wk_hi), c].dropna()
+        fig.add_trace(go.Scatter(x=s_.index, y=s_.round(2), mode="lines+markers+text", name=live_lbl, line=dict(color=WINE, width=1.6),
+                                 marker=dict(size=7, color=WINE, line=dict(color="#ffffff", width=1)),
+                                 text=[""] * (len(s_) - 1) + [f"{live_lbl} {s_.iloc[-1]:+,.1f}{suf}"] if len(s_) else [],
+                                 textposition="top center", textfont=dict(size=11, color=WINE),
+                                 hovertemplate=f"{live_lbl} <b>%{{y:+,.1f}}{suf}</b><extra></extra>"))
     fig.add_hline(y=0, line=dict(color="rgba(10,36,99,0.3)", width=1))
-    fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
+    if wk_lo <= 0 <= wk_hi:
+        fig.add_vline(x=0, line=dict(color="rgba(10,36,99,0.35)", width=1, dash="dot"))
+    wks = list(range(wk_lo, wk_hi + 1))
     fig.update_layout(
-        height=height, margin=dict(t=24, b=60, l=50, r=16), barmode="relative", bargap=0.3, hovermode="x unified",
-        legend=dict(orientation="h", y=-0.16, yanchor="top", x=0.5, xanchor="center", font=dict(size=10)),
-        xaxis=dict(tickvals=list(range(-6, 4)), ticktext=[("FND wk" if w == 0 else f"{w:+d}") for w in range(-6, 4)],
+        height=height, margin=dict(t=16, b=50, l=50, r=16), hovermode="closest", showlegend=False,
+        xaxis=dict(tickvals=wks, ticktext=[("FND wk" if w == 0 else f"{w:+d}") for w in wks], range=[wk_lo - 0.6, wk_hi + 0.6],
                    showgrid=False, tickfont=AXIS_FONT,
-                   title=dict(text=f"Weeks to FND (COT, Tuesday) · average of {n} past {month} contracts",
-                              font=dict(size=10, color="#7a86a8"))),
-        yaxis=dict(title=dict(text="Weekly OI change ('000 lots)", font=dict(size=10, color="#7a86a8")),
-                   showgrid=True, gridcolor=GRID, zeroline=False, tickfont=dict(size=10, color="#7a86a8"),
-                   hoverformat="+,.1f"),
+                   title=dict(text="Weeks to FND (COT, Tuesday)", font=dict(size=10, color="#7a86a8"))),
+        yaxis=dict(range=y_rng, title=dict(text=y_title, font=dict(size=10, color="#7a86a8")),
+                   showgrid=True, gridcolor=GRID, zeroline=False, tickfont=dict(size=10, color="#7a86a8"), hoverformat="+,.1f"),
+        **_D)
+    return fig
+
+
+COT_CS = [[0, "#c98a9c"], [0.35, "#f1e4e8"], [0.5, "#ffffff"], [0.65, "#e3f4f6"], [0.82, "#a9dbe2"], [1, "#2c8f9d"]]
+COT_CHIP_CS = [[0, "#e2e8f4"], [1, "#eef2f9"]]                       # 0 = stat-row chip, 1 = week / year chip
+COT_DIV_VIVID = [[0, "#e5243b"], [0.25, "#f98d8f"], [0.5, "#ffffff"], [0.75, "#6fd3a8"], [1, "#00a86b"]]
+COT_STAT_CS = {"Avg": COT_DIV_VIVID, "Std": [[0, "#ffffff"], [0.5, "#ffd166"], [1, "#ff8c00"]], "ICV": COT_DIV_VIVID}
+COT_STAT_HELP = {"Avg": "Avg: mean across all years for this week",
+                 "Std": "Std: how much this week swings year to year (higher = less predictable)",
+                 "ICV": "ICV = Avg / Std: average move per unit of noise"}
+
+
+def cot_week_matrix(s_: pd.Series, suf: str, fnds: list, row_h: int = 26) -> go.Figure:
+    """Year x ISO week grid of one position's weekly change, oldest year on top and Avg / Std / ICV at the
+    bottom (the Rollex week-of-year look). Week 53 is left out; a week holding two reports shows their sum.
+    The colour range is clipped at the 98th percentile so one shock week does not wash out the rest.
+    `fnds` holds (ISO week, contract month) for the latest year's FNDs, outlined in wine down the grid."""
+    iso = s_.index.isocalendar()
+    x = pd.DataFrame({"y": iso["year"].to_numpy(), "w": iso["week"].to_numpy(), "v": s_.to_numpy()})
+    wks = list(range(1, 53))
+    piv = x[x["w"] <= 52].groupby(["y", "w"])["v"].sum(min_count=1).unstack().reindex(columns=wks).dropna(how="all")
+    stats = {"Avg": piv.mean(), "Std": piv.std()}
+    stats["ICV"] = stats["Avg"] / stats["Std"]
+    rows = [str(y) for y in piv.index] + ["", "Avg", "Std", "ICV"]
+    n_c, n_r, n_y = len(wks), len(rows), len(piv)
+    blank = lambda v: [[v] * n_c for _ in range(n_r)]
+    z, txt, hov = blank(None), blank(""), blank("")
+    for i, (y, r) in enumerate(piv.iterrows()):
+        z[i] = [float(v) if pd.notna(v) else None for v in r]
+        txt[i] = [f"{v:.1f}" if pd.notna(v) else "" for v in r]
+        hov[i] = [f"{y} week {w}: <b>{v:+,.1f}{suf}</b>" if pd.notna(v) else "" for w, v in zip(wks, r)]
+    wmax = float(piv.abs().stack().quantile(0.98)) or 1.0
+    trace = lambda z_, t_, h_, cs, lo, hi, xs=None, ys=None: go.Heatmap(
+        z=z_, x=xs or list(range(n_c)), y=ys or list(range(n_r)), colorscale=cs, zmin=lo, zmax=hi, hoverongaps=False,
+        text=t_, texttemplate="<b>%{text}</b>", textfont=dict(size=10, color="#0b3a42"),
+        customdata=h_, hovertemplate="%{customdata}<extra></extra>", showscale=False, xgap=2, ygap=2)
+    fig = go.Figure(trace(z, txt, hov, COT_CS, -wmax, wmax))
+    for k, st_ in enumerate(("Avg", "Std", "ICV")):
+        r = n_y + 1 + k
+        v = stats[st_].astype(float)
+        sz, stx, sh = blank(None), blank(""), blank("")
+        sz[r] = [float(a_) if pd.notna(a_) else None for a_ in v]
+        stx[r] = [f"{a_:.1f}" if pd.notna(a_) else "" for a_ in v]
+        sh[r] = [f"<b>{st_} week {w}: {t}</b><br>{COT_STAT_HELP[st_]}" for w, t in zip(wks, stx[r])]
+        m_ = float(v.abs().max()) or 1.0
+        lo, hi = (float(v.min()), m_) if st_ == "Std" else (-m_, m_)
+        fig.add_trace(trace(sz, stx, sh, COT_STAT_CS[st_], lo, hi))
+    cz, ct = [[None] * (n_c + 1) for _ in range(n_r + 1)], [[""] * (n_c + 1) for _ in range(n_r + 1)]
+    for j, w in enumerate(wks):
+        cz[0][j + 1], ct[0][j + 1] = 1, str(w)
+    for i, r in enumerate(rows):
+        if r:
+            cz[i + 1][0], ct[i + 1][0] = (0 if r in stats else 1), r
+    ch = [[""] * (n_c + 1) for _ in range(n_r + 1)]
+    fig.add_trace(trace(cz, ct, ch, COT_CHIP_CS, 0, 1, list(range(-1, n_c)), list(range(-1, n_r))))
+    # Navy month band over the weeks; a week belongs to the month of its Thursday
+    months = []
+    for j, w in enumerate(wks):
+        m_ = pd.Timestamp.fromisocalendar(int(piv.index.max()), w, 4).strftime("%b")
+        months[-1:] = [(months[-1][0], j, m_)] if months and months[-1][2] == m_ else months[-1:] + [(j, j, m_)]
+    for c0, c1, m_ in months:
+        fig.add_shape(type="rect", x0=c0 - 0.46, x1=c1 + 0.46, y0=-2.42, y1=-1.58, line_width=0, fillcolor="#1e3a6e", layer="below")
+        fig.add_annotation(x=(c0 + c1) / 2, y=-2, text=f"<b>{m_}</b>", showarrow=False, font=dict(size=10, color="#ffffff"))
+    for w, m_ in fnds:
+        fig.add_shape(type="rect", x0=w - 1.5, x1=w - 0.5, y0=-0.5, y1=n_r - 0.5, line=dict(color=WINE, width=1.4), layer="above")
+        fig.add_annotation(x=w - 1, y=-3, text=f"<b>{m_}</b>", showarrow=False, font=dict(size=11, color=WINE))
+    fig.update_layout(
+        height=(n_r + 3) * row_h + 36, margin=dict(t=12, b=20, l=12, r=12),
+        xaxis=dict(range=[-1.5, n_c - 0.5], visible=False, fixedrange=True),
+        yaxis=dict(range=[n_r - 0.5, -3.5], visible=False, fixedrange=True),
         **_D)
     return fig
 
@@ -1748,14 +1832,66 @@ elif view == "Roll & Positioning":
     # Daily, per contract: where the expiring month's open interest goes (rolled or closed)
     lbl(f"Roll · where {month}'s open interest goes", "'000 lots a day, median day")
     chart(roll_chart(*roll_flow(comm, month, t_lo, t_hi, mt)))
-    # Weekly, whole market (COT): which trader groups the change in open interest came from
+
+elif view == "COT Link":
+    # Weekly, whole market (COT): how each trader group's long, short or net position changes around FND
     cmt_cot = COT_PATH.stat().st_mtime if COT_PATH.exists() else 0.0
-    mean_w, live_w, n_w = cot_by_week(comm, month, mt, cmt_cot)
-    lbl("COT · who changes open interest around FND", "weekly, all months together, '000 lots")
-    if mean_w is None:
+    k = st.columns([4, 1.2, 2], gap="large")
+    units = ["'000 lots", "% of OI"]
+    with k[1]:
+        unit_w = st.selectbox("Show as", units, index=units.index(st.session_state.get("cot_unit", units[0])), key="w_cot_unit")
+    st.session_state["cot_unit"] = unit_w
+    pct_w = unit_w == "% of OI"
+    past_w, live_w, live_lbl, n_w = cot_by_week(comm, month if cot_scope == "Contract month" else None, pct_w, mt, cmt_cot)
+    if past_w is None:
         st.info("No COT data for this market.")
     else:
-        chart(cot_chart(mean_w, live_w, n_w))
+        series = {f"{g}_{side}": (f"{nm} {side}", colr) for g, nm, colr in COT_GROUPS + [COT_INDEX] if f"{g}_net" in past_w
+                  for side in ("net", "long", "short")}
+        with k[0]:
+            sel = st.multiselect("Positions", list(series),
+                                 default=[c for c in st.session_state.get("cot_series", ["mm_net", "producer_net"]) if c in series],
+                                 format_func=lambda c: series[c][0], key=f"w_cot_series_{len(series)}")
+        st.session_state["cot_series"] = sel
+        with k[2]:
+            wk_lo, wk_hi = st.slider("Weeks to FND", COT_WK_LO, COT_WK_HI, st.session_state.get("cot_wk_rng", (COT_WK_LO, COT_WK_HI)), key="w_cot_wk_rng")
+        st.session_state["cot_wk_rng"] = (wk_lo, wk_hi)
+        how = (f"weekly, {'% of total OI a week earlier' if pct_w else unit_w} · spread of {n_w} past {month + ' ' if cot_scope == 'Contract month' else ''}contracts, box median and 25-75%"
+               + (f" · line: {live_lbl}" if live_w is not None else ""))
+        if sel:
+            # Same y range on every plot, so the size of one position's moves compares directly with another's
+            shown = [c for c in series if c in sel]
+            vals = past_w.loc[past_w["wk"].between(wk_lo, wk_hi), shown].to_numpy(dtype="float64").ravel()
+            if live_w is not None:
+                vals = np.concatenate([vals, live_w.loc[(live_w.index >= wk_lo) & (live_w.index <= wk_hi), shown].to_numpy(dtype="float64").ravel()])
+            pad = (np.nanmax(vals) - np.nanmin(vals)) * 0.06
+            y_rng = [float(np.nanmin(vals) - pad), float(np.nanmax(vals) + pad)]
+            for c in shown:
+                lbl(f"COT · {series[c][0]} around FND", how)
+                chart(cot_violin_chart(past_w, live_w, live_lbl, c, *series[c], wk_lo, wk_hi, y_rng, "%" if pct_w else "k",
+                                       "Weekly change (% of OI)" if pct_w else "Weekly change ('000 lots)"))
+        else:
+            st.info("Pick at least one position.")
+        # Calendar view of one position: every year since the COT history starts, not tied to a contract month
+        opts = list(series)
+        cur_mx = st.session_state.get("cot_mx", "mm_net")
+        k_mx = st.columns([1.5, 1.5, 3], gap="large")
+        with k_mx[0]:
+            mx = st.selectbox("Matrix position", opts, index=opts.index(cur_mx) if cur_mx in opts else 0,
+                              format_func=lambda c: series[c][0], key=f"w_cot_mx_{len(opts)}")
+        st.session_state["cot_mx"] = mx
+        with k_mx[1]:
+            unit_mx = pill("cot_unit_mx", "Matrix shows", units, "% of OI")
+        pct_mx = unit_mx == "% of OI"
+        s_mx = cot_changes(comm, pct_mx, cmt_cot)[mx].dropna()
+        # The latest year's FND weeks, by contract month
+        y_mx = int(s_mx.index.isocalendar()["year"].max())
+        info_mx = raw.groupby("ice_symbol").agg(FND=("FND", "first"), m=("month", "first"))
+        iso_mx = pd.to_datetime(info_mx["FND"]).dt.isocalendar()
+        fnds_mx = [(int(w), m_) for w, m_ in zip(iso_mx["week"][iso_mx["year"] == y_mx], info_mx["m"][iso_mx["year"] == y_mx]) if w <= 52]
+        lbl(f"{MARKET_NAMES[comm]} · COT week of year",
+            f"weekly change, {'% of total OI a week earlier' if pct_mx else unit_mx} · all contract months · outlined: {y_mx} FND weeks")
+        chart(cot_week_matrix(s_mx, "%" if pct_mx else "k", fnds_mx))
 
 else:
     unit_c = cfg["unit"]
