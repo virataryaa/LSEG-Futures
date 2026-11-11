@@ -1020,7 +1020,12 @@ def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str,
             p2, p2_pct = data["spot_price2"], data["price2_chg_pct"]
         sp2 = (px2_piv[leg1] - px2_piv[leg2]) if have_spread else pd.Series(dtype=float)
         px2 = dict(price=p2, pct=p2_pct, spread=sp2, label=leg_b)
-        price_label = f"{leg_a} {price_label}"
+        # Compact labels: the combined table carries ~4 extra columns and must
+        # still fit the page width without a sideways scroll.
+        _spot = data["spot_sym"].iloc[-1] if len(data["spot_sym"]) else None
+        _basis = (_leg_suffix(_spot) if _spot else "spot") if price_source == "Spot (Most OI)" \
+            else _leg_suffix(price_source)
+        price_label = f"{leg_a} Px ({_basis})"
         spread_label = f"{leg_a} {_leg_suffix(leg1)}-{_leg_suffix(leg2)}" if have_spread else f"{leg_a} Spread"
     return dict(
         px2=px2, px_lbl_a=(leg_a if px2 else ""),
@@ -1034,10 +1039,31 @@ def _grid_context(data: dict, table_lookback: int, price_source: str, leg1: str,
 
 # Second price leg's cells (combined CC+LCC only). Every helper returns "" when
 # there is no second leg, so the single-market tables are unchanged.
+# Compact layout (combined market): month-only contract headers, wrapping
+# headers, whole-number prices and no second Date column, so the wider table
+# still fits the page with no horizontal scroll.
+def _compact_css(tbl: str) -> str:
+    return (f"table.{tbl}.compact{{width:100%}}"
+            f"table.{tbl}.compact th{{white-space:normal;line-height:1.15;vertical-align:bottom}}"
+            f"table.{tbl}.compact th, table.{tbl}.compact td{{min-width:0 !important;padding:1px 3px}}")
+
+
+def _sym_th(sym: str, compact: bool) -> str:
+    return _leg_suffix(sym) if compact else sym
+
+
+def _pxf(v, compact: bool, signed: bool = False) -> str:
+    if pd.isna(v):
+        return ""
+    if compact:
+        return f"{v:+,.0f}" if signed else f"{v:,.0f}"
+    return f"{v:+.2f}" if signed else f"{v:.2f}"
+
+
 def _px2_price_th(px2):
     if not px2:
         return ""
-    return (f"<th class='c-px'>{px2['label']} Price</th>"
+    return (f"<th class='c-px'>{px2['label']} Px</th>"
             f"<th class='c-pxchg'>{px2['label']} +/-</th>")
 
 
@@ -1053,7 +1079,7 @@ def _px2_value_cells(px2, d, vmax=None):
         return ""
     p, pct = px2["price"].get(d, np.nan), px2["pct"].get(d, np.nan)
     sty = f" style='{_oi_chg_style(pct, vmax)}'" if vmax is not None else ""
-    return (f"<td class='c-px'>{f'{p:.2f}' if pd.notna(p) else ''}</td>"
+    return (f"<td class='c-px'>{_pxf(p, True)}</td>"
             f"<td class='c-pxchg'{sty}>{_fmt_pct(pct)}</td>")
 
 
@@ -1064,7 +1090,7 @@ def _px2_delta_cells(px2, d1, d0):
     ok = pd.notna(p1) and pd.notna(p0)
     a = p1 - p0 if ok else np.nan
     pct = (p1 - p0) / p0 * 100 if ok and p0 else np.nan
-    return (f"<td class='c-px'>{f'{a:+.2f}' if pd.notna(a) else ''}</td>"
+    return (f"<td class='c-px'>{_pxf(a, True, True)}</td>"
             f"<td class='c-pxchg'>{_fmt_pct(pct)}</td>")
 
 
@@ -1072,7 +1098,7 @@ def _px2_spread_cell(px2, d):
     if not px2:
         return ""
     v = px2["spread"].get(d, np.nan)
-    return f"<td class='c-spread'>{f'{v:+.2f}' if pd.notna(v) else ''}</td>"
+    return f"<td class='c-spread'>{_pxf(v, True, True)}</td>"
 
 
 def _px2_spread_delta_cell(px2, d1, d0):
@@ -1080,7 +1106,7 @@ def _px2_spread_delta_cell(px2, d1, d0):
         return ""
     s1, s0 = px2["spread"].get(d1, np.nan), px2["spread"].get(d0, np.nan)
     v = s1 - s0 if pd.notna(s1) and pd.notna(s0) else np.nan
-    return f"<td class='c-spread'>{f'{v:+.2f}' if pd.notna(v) else ''}</td>"
+    return f"<td class='c-spread'>{_pxf(v, True, True)}</td>"
 
 
 def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: str,
@@ -1097,7 +1123,7 @@ def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: st
     oi_piv = ctx["oi_piv"]; total_oi = ctx["total_oi"]; spot_price = ctx["spot_price"]
     price_chg_pct = ctx["price_chg_pct"]; oi_chg = ctx["oi_chg"]; spot_oi_chg = ctx["spot_oi_chg"]
     oi_chg_5d = ctx["oi_chg_5d"]; spread = ctx["spread"]; have_spread = ctx["have_spread"]
-    px2 = ctx["px2"]
+    px2 = ctx["px2"]; cp = px2 is not None
     # Same columns as the Daily Grid (same window, same live-contract rule).
     syms = ctx["syms"]
     dates = list(oi_piv.index[oi_piv.notna().any(axis=1)])
@@ -1136,6 +1162,7 @@ def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: st
       table.spotsum tr.tue-row{{background:#eceef1}}
       table.spotsum tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
       table.spotsum {_GRID_COL_CSS.replace('.c-', 'table.spotsum .c-').replace('}.', '}table.spotsum .')}
+      {_compact_css('spotsum')}
     </style>"""
 
     def value_row(label, d):
@@ -1149,14 +1176,14 @@ def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: st
                     if pd.notna(oi_chg.get(d)) and pd.notna(spot_oi_chg.get(d)) else np.nan)
         cells += (
             f"<td class='c-tot'>{_fmt_num(total_oi.get(d))}</td>"
-            f"<td class='c-px'>{f'{px_v:.2f}' if pd.notna(px_v) else ''}</td>"
+            f"<td class='c-px'>{_pxf(px_v, cp)}</td>"
             f"<td class='c-pxchg'>{_fmt_pct(price_chg_pct.get(d))}</td>"
             + _px2_value_cells(px2, d) +
             f"<td class='c-oichg'>{_fmt_num(oi_chg.get(d), True)}</td>"
             f"<td class='c-spot'>{_fmt_num(spot_oi_chg.get(d), True)}</td>"
             f"<td class='c-nonspot'>{_fmt_num(non_spot, True)}</td>"
-            f"<td class='c-date2' style='color:#9ca3af'>{d_str}</td>"
-            f"<td class='c-spread'>{f'{spread_v:+.2f}' if pd.notna(spread_v) else ''}</td>"
+            + ("" if cp else f"<td class='c-date2' style='color:#9ca3af'>{d_str}</td>") +
+            f"<td class='c-spread'>{_pxf(spread_v, cp, True)}</td>"
             + _px2_spread_cell(px2, d) +
             f"<td class='c-avg'>{_fmt_num(oi_chg_5d.get(d), True)}</td>"
         )
@@ -1181,25 +1208,25 @@ def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: st
         avg_d = a1 - a0 if pd.notna(a1) and pd.notna(a0) else np.nan
         cells += (
             f"<td class='c-tot'>{_fmt_num(tot_delta, True)}</td>"
-            f"<td class='c-px'>{f'{px_abs:+.2f}' if pd.notna(px_abs) else ''}</td>"
+            f"<td class='c-px'>{_pxf(px_abs, cp, True)}</td>"
             f"<td class='c-pxchg'>{_fmt_pct(px_pct)}</td>"
             + _px2_delta_cells(px2, d1, d0) +
             f"<td class='c-oichg'>{_fmt_num(tot_delta, True)}</td>"
             f"<td class='c-spot'>{_fmt_num(spot_flow, True)}</td>"
             f"<td class='c-nonspot'>{_fmt_num(non_spot, True)}</td>"
-            f"<td class='c-date2'></td>"
-            f"<td class='c-spread'>{f'{spread_d:+.2f}' if pd.notna(spread_d) else ''}</td>"
+            + ("" if cp else "<td class='c-date2'></td>") +
+            f"<td class='c-spread'>{_pxf(spread_d, cp, True)}</td>"
             + _px2_spread_delta_cell(px2, d1, d0) +
             f"<td class='c-avg'>{_fmt_num(avg_d, True)}</td>"
         )
         return f"<tr class='delta'><td class='lbl'>{label}</td>{cells}</tr>"
 
-    spacer = f"<tr class='spacer'><td colspan='{len(syms) + 10 + (3 if px2 else 0)}'></td></tr>"
-    header = ("<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
+    spacer = f"<tr class='spacer'><td colspan='{len(syms) + 10 + (2 if px2 else 0)}'></td></tr>"
+    header = ("<tr><th class='lbl'>Date</th>" + "".join(f"<th class='ccol'>{_sym_th(s, cp)}</th>" for s in syms) +
               f"<th class='c-tot'>Total Mkt OI</th><th class='c-px'>{ctx['price_label']}</th>"
               f"<th class='c-pxchg'>{ctx['px_lbl_a']} +/-</th>" + _px2_price_th(px2) +
               "<th class='c-oichg'>OI Chg</th><th class='c-spot'>Spot OI +/-</th>"
-              "<th class='c-nonspot'>Non Spot Chg</th><th class='c-date2'>Date</th>"
+              "<th class='c-nonspot'>Non Spot Chg</th>" + ("" if cp else "<th class='c-date2'>Date</th>") +
               f"<th class='c-spread'>{ctx['spread_label']}</th>" + _px2_spread_th(px2, ctx) +
               "<th class='c-avg'>OI Chg 5d Avg</th></tr>")
     body = (
@@ -1213,7 +1240,7 @@ def build_spot_summary_html(data: dict, table_lookback: int, leg1: str, leg2: st
         + value_row(pd.Timestamp(prev_cot).strftime("%d/%m/%Y") if prev_cot else "", prev_cot)
         + delta_row("+/- week", prev_cot, prev_cot2)
     )
-    return f"{css}<div class='spotsum-wrap'><table class='spotsum'><thead>{header}</thead><tbody>{body}</tbody></table></div>"
+    return f"{css}<div class='spotsum-wrap'><table class='spotsum{" compact" if cp else ""}'><thead>{header}</thead><tbody>{body}</tbody></table></div>"
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
@@ -1237,7 +1264,7 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
     dates = ctx["dates"]; dates_desc = ctx["dates_desc"]; syms = ctx["syms"]
     have_spread = ctx["have_spread"]; spread = ctx["spread"]
     spread_label = ctx["spread_label"]; price_label = ctx["price_label"]
-    px2 = ctx["px2"]
+    px2 = ctx["px2"]; cp = px2 is not None
 
     oi_chg_vmax = _safe(oi_chg.loc[dates].abs().max())
     # Each bar column is scaled to its own largest move: price % and lot counts
@@ -1260,13 +1287,15 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
       table.spotgrid {_GRID_COL_CSS.replace('.c-', 'table.spotgrid .c-').replace('}.', '}table.spotgrid .')}
       table.spotgrid tr.tue-row{{background:#eceef1}}
       table.spotgrid tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
+      {_compact_css('spotgrid')}
     </style>"""
 
-    header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) +
+    header = ("<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{_sym_th(s, cp)}</th>" for s in syms) +
               f"<th class='c-tot'>Total Mkt OI</th><th class='c-px'>{price_label}</th>"
               f"<th class='c-pxchg'>{ctx['px_lbl_a']} +/-</th>" + _px2_price_th(px2) +
               "<th class='c-oichg'>OI Chg</th><th class='c-spot'>Spot OI +/-</th><th class='c-nonspot'>Non Spot Chg</th>"
-              f"<th class='c-date2'>Date</th><th class='c-spread'>{spread_label}</th>" + _px2_spread_th(px2, ctx) +
+              + ("" if cp else "<th class='c-date2'>Date</th>") +
+              f"<th class='c-spread'>{spread_label}</th>" + _px2_spread_th(px2, ctx) +
               "<th class='c-avg'>OI Chg 5d Avg</th></tr>")
 
     rows = []
@@ -1289,19 +1318,20 @@ def build_spot_daily_table_html(commodity: str, table_lookback: int, leg1: str, 
         # level instead would post a spurious jump on every roll day.
         non_spot_chg_v = oi_chg_v - spot_chg_v if pd.notna(oi_chg_v) and pd.notna(spot_chg_v) else np.nan
         cells += f"<td class='c-tot'>{_fmt_num(total_oi.get(d))}</td>"
-        cells += f"<td class='c-px'>{px_v:.2f}</td>" if pd.notna(px_v) else "<td class='c-px'></td>"
+        cells += f"<td class='c-px'>{_pxf(px_v, cp)}</td>"
         cells += f"<td class='c-pxchg' style='{_oi_chg_style(px_pct_v, px_vmax)}'>{_fmt_pct(px_pct_v)}</td>"
         cells += _px2_value_cells(px2, d, px2_vmax)
         cells += f"<td class='c-oichg' style='{_oi_chg_style(oi_chg_v, oi_chg_vmax)}'>{_fmt_num(oi_chg_v, True)}</td>"
         cells += f"<td class='c-spot' style='{_oi_chg_style(spot_chg_v, spot_vmax)}'>{_fmt_num(spot_chg_v, True)}</td>"
         cells += f"<td class='c-nonspot' style='{_oi_chg_style(non_spot_chg_v, nonspot_vmax)}'>{_fmt_num(non_spot_chg_v, True)}</td>"
-        cells += f"<td class='c-date2' style='color:#9ca3af'>{d_str}</td>"
-        cells += f"<td class='c-spread'>{spread_v:+.2f}</td>" if pd.notna(spread_v) else "<td class='c-spread'></td>"
+        if not cp:
+            cells += f"<td class='c-date2' style='color:#9ca3af'>{d_str}</td>"
+        cells += f"<td class='c-spread'>{_pxf(spread_v, cp, True)}</td>"
         cells += _px2_spread_cell(px2, d)
         cells += f"<td class='c-avg' style='{_oi_chg_style(oichg5d_v, oi_chg_vmax)};color:{_sign_color(oichg5d_v)}'>{_fmt_num(oichg5d_v, True)}</td>"
         rows.append(f"<tr{tr_cls}>{cells}</tr>")
 
-    return f"{css}<div class='spotgrid-wrap'><table class='spotgrid'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
+    return f"{css}<div class='spotgrid-wrap'><table class='spotgrid{" compact" if cp else ""}'>{header}<tbody>{''.join(rows)}</tbody></table></div>"
 
 
 @st.cache_data(max_entries=50, show_spinner=False)
@@ -1338,7 +1368,8 @@ def build_expiry_chg_table_html(commodity: str, table_lookback: int, mtime: floa
       table.expchg tbody tr:hover td{{background-color:rgba(10,36,99,.04)}}
     </style>"""
 
-    header = "<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{s}</th>" for s in syms) + "</tr>"
+    _cp = "settlement_2" in load_data(commodity, mtime).columns
+    header = "<tr><th class='date-cell'>Date</th>" + "".join(f"<th class='ccol'>{_sym_th(s, _cp)}</th>" for s in syms) + "</tr>"
     rows = []
     for d in dates_desc:
         d_str = pd.Timestamp(d).strftime("%d/%m/%Y")
