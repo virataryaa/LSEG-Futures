@@ -1606,6 +1606,12 @@ with st.sidebar:
                 unsafe_allow_html=True)
     with st.container(key="sb_controls"):
 
+        # Combined cocoa (CC+LCC, OI/volume summed, CC prices) sits after LCC.
+        # Local copy only -- the other pages keep the plain seven markets.
+        if "CC+LCC" not in COMMODITIES:
+            _ck = list(COMMODITIES.items())
+            _i = [k for k, _ in _ck].index("LCC") + 1
+            COMMODITIES = dict(_ck[:_i] + [("CC+LCC", (None, "CC+LCC"))] + _ck[_i:])
         commodity = st.selectbox("Commodity", list(COMMODITIES.keys()),
                                  format_func=lambda x: COMMODITIES[x][1])
 
@@ -2434,11 +2440,13 @@ def _view_total_oi():
         # one) so it can be read side by side with OI change without scrolling
         # past the price matrix in between.
         rx = load_rollex(commodity, _rollex_mtime())
+        # Combined cocoa has no price of its own; load_rollex hands back CC's.
+        _px_lbl = "CC (USD price)" if commodity == "CC+LCC" else COMMODITIES[commodity][1]
         if rx is not None and len(rx) > 60:
             vol_win = st.radio("RV window", ["20d", "60d"], horizontal=True,
                                key="totoi_vol_win", label_visibility="collapsed")
             win = {"20d": 20, "60d": 60}[vol_win]
-            st.markdown(f"#### Monthly Realized Volatility ({vol_win}) : {COMMODITIES[commodity][1]} "
+            st.markdown(f"#### Monthly Realized Volatility ({vol_win}) : {_px_lbl} "
                         f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {rx.index[-1]:%d %b %Y}</span>",
                         unsafe_allow_html=True)
             # Same formula and monthly convention as the Rollex dashboard's own
@@ -2461,7 +2469,7 @@ def _view_total_oi():
                 st.info(f"Not enough history for {vol_win} realized volatility yet.")
 
             # ── Monthly Rollex price change matrix ──────────────────────────────
-            st.markdown(f"#### Monthly Rollex Price Change : {COMMODITIES[commodity][1]} "
+            st.markdown(f"#### Monthly Rollex Price Change : {_px_lbl} "
                         f"<span style='font-size:.8rem;font-weight:500;color:#6b7280'>&nbsp;as of {rx.index[-1]:%d %b %Y}</span>",
                         unsafe_allow_html=True)
             # A month's change is its daily roll-adjusted returns compounded, so a
@@ -3129,6 +3137,12 @@ NAV_GROUPS = {
 # fail loudly if the two ever disagree rather than quietly showing wrong controls.
 assert {g: list(v) for g, v in NAV_GROUPS.items()} == {g: list(v) for g, v in _VIEW_CONTROLS.items()}, \
     "_VIEW_CONTROLS is out of step with NAV_GROUPS"
+
+# Combined CC+LCC carries only CC's USD prices, so the spread/price views would
+# just repeat CC -- hide them for it.
+if commodity == "CC+LCC":
+    NAV_GROUPS["Open Interest"] = {k: v for k, v in NAV_GROUPS["Open Interest"].items()
+                                   if k not in ("Spot OI vs Spread", "Spread OI")}
 
 # A relabelled tab (e.g. "Board" -> "All Futures OI") leaves a stale value in
 # a returning browser session's state — both the widget's own key and the

@@ -51,6 +51,7 @@ LOT_TONNES = {
     "SB":  112_000 * 0.45359237 / 1000,
     "LSU": 50.0,
     "CT":  50_000 * 0.45359237 / 1000,
+    "CC+LCC": 10.0,
 }
 
 MONTH_NAMES = {
@@ -91,8 +92,20 @@ C = {
 }
 
 
+# Synthetic combined cocoa market, offered only by the OI progression page (it
+# adds the key to its own copy of COMMODITIES, so other pages are unaffected).
+# Both legs are 10 t lots on the same H/K/N/U/Z cycle and LCC symbols are the CC
+# symbol with an 'L' prefix, so each CC contract absorbs its LCC twin: OI and
+# volume are summed, while prices/LTD/FND stay CC's (USD) -- adding a USD and a
+# GBP price makes no sense. Only sessions both exchanges printed are kept, so a
+# one-exchange holiday does not show as a half-size market.
+COMBINED = {"CC+LCC": ("CC", "LCC")}
+
+
 # ── Data loaders ──────────────────────────────────────────────────────────────
 def _mtime(commodity: str) -> float:
+    if commodity in COMBINED:
+        return max(_mtime(c) for c in COMBINED[commodity])
     filename, _ = COMMODITIES[commodity]
     p = DB_PATH / filename
     return p.stat().st_mtime if p.exists() else 0.0
@@ -103,6 +116,8 @@ _NUMERIC_COLS = ["Open", "High", "Low", "settlement", "volume", "open_interest"]
 
 @st.cache_data
 def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
+    if commodity in COMBINED:
+        return _load_combined(commodity, mtime)
     filename, _ = COMMODITIES[commodity]
     df = pd.read_parquet(DB_PATH / filename)
     df["Date"] = pd.to_datetime(df["Date"])
@@ -120,6 +135,35 @@ def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     return df[df["open_interest"] > 0].copy()
 
 
+def _load_combined(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
+    base, add = COMBINED[commodity]
+    b, a = load_data(base, mtime), load_data(add, mtime)
+    common_dates = np.intersect1d(b["Date"].unique(), a["Date"].unique())
+    b = b[b["Date"].isin(common_dates)].copy()
+    a = a[a["Date"].isin(common_dates)]
+    a = a.assign(ice_symbol=a["ice_symbol"].str[len(add) - len(base):])  # 'LCCZ6' -> 'CCZ6'
+    # Outer join: a session where the CC leg has no row (OI filtered as 0/NA,
+    # mostly back months) must still carry its LCC OI, not drop it. Such rows
+    # take the CC contract's own LTD/FND when known and have no price.
+    keys = ["Date", "ice_symbol"]
+    m = b.merge(a[keys + ["open_interest", "volume", "month", "year", "LTD", "FND"]],
+                on=keys, how="outer", suffixes=("", "_a"))
+    for col in ("month", "year", "LTD", "FND"):
+        m[col] = m[col].fillna(m[col + "_a"])
+    sym_ltd = b.groupby("ice_symbol")["LTD"].first()
+    sym_fnd = b.groupby("ice_symbol")["FND"].first()
+    only_a = m["open_interest"].isna()
+    m.loc[only_a, "LTD"] = m.loc[only_a, "ice_symbol"].map(sym_ltd).fillna(m.loc[only_a, "LTD"])
+    m.loc[only_a, "FND"] = m.loc[only_a, "ice_symbol"].map(sym_fnd).fillna(m.loc[only_a, "FND"])
+    m["open_interest"] = m["open_interest"].fillna(0) + m["open_interest_a"].fillna(0)
+    m["volume"] = m["volume"].fillna(0) + m["volume_a"].fillna(0)
+    m["year"] = m["year"].astype("int64")
+    m["commodity"] = commodity
+    m["days_to_expiry"] = (m["LTD"] - m["Date"]).dt.days
+    m = m.drop(columns=[c for c in m.columns if c.endswith("_a")])
+    return m.sort_values(keys).reset_index(drop=True)
+
+
 def _rollex_mtime() -> float:
     p = DB_PATH / "rollex.parquet"
     return p.stat().st_mtime if p.exists() else 0.0
@@ -130,6 +174,8 @@ def load_rollex(commodity: str, mtime: float = 0.0):
     """Daily roll-adjusted return of the desk's Rollex index for one commodity,
     as a Date-indexed float Series, or None if the builder has not copied it.
     The builder copies it from the Rollex project on every run."""
+    if commodity in COMBINED:                 # prices are the base (CC) leg's
+        return load_rollex(COMBINED[commodity][0], mtime)
     p = DB_PATH / "rollex.parquet"
     if not p.exists():
         return None
@@ -156,6 +202,11 @@ def load_total_oi(commodity: str, mtime: float = 0.0):
     is not short on a session where an expiring month has no row, and it runs
     back to 2000 for the US markets rather than starting where the database's
     earliest stored contract expires (2011)."""
+    if commodity in COMBINED:                 # sum, on sessions both legs have
+        parts = [load_total_oi(c, mtime) for c in COMBINED[commodity]]
+        if any(s is None for s in parts):
+            return None
+        return (parts[0] + parts[1]).dropna()
     p = DB_PATH / "total_oi.parquet"
     if not p.exists():
         return None
