@@ -3281,6 +3281,7 @@ assert {g: list(v) for g, v in NAV_GROUPS.items()} == {g: list(v) for g, v in _V
 if commodity == "CC+LCC":
     NAV_GROUPS["Open Interest"] = {k: v for k, v in NAV_GROUPS["Open Interest"].items()
                                    if k not in ("Spot OI vs Spread", "Spread OI")}
+    NAV_GROUPS.pop("OI & Volume", None)       # not wanted for the combined view
 
 # A relabelled tab (e.g. "Board" -> "All Futures OI") leaves a stale value in
 # a returning browser session's state — both the widget's own key and the
