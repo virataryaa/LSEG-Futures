@@ -146,8 +146,11 @@ def _load_combined(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     # mostly back months) must still carry its LCC OI, not drop it. Such rows
     # take the CC contract's own LTD/FND when known and have no price.
     keys = ["Date", "ice_symbol"]
-    m = b.merge(a[keys + ["open_interest", "volume", "month", "year", "LTD", "FND"]],
+    m = b.merge(a[keys + ["open_interest", "volume", "month", "year", "LTD", "FND", "settlement"]],
                 on=keys, how="outer", suffixes=("", "_a"))
+    # The second leg's own price (LCC, GBP) rides along so price columns can
+    # show both legs side by side; 'settlement' itself stays the base leg's.
+    m["settlement_2"] = m.pop("settlement_a")
     for col in ("month", "year", "LTD", "FND"):
         m[col] = m[col].fillna(m[col + "_a"])
     sym_ltd = b.groupby("ice_symbol")["LTD"].first()
@@ -161,7 +164,17 @@ def _load_combined(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     m["commodity"] = commodity
     m["days_to_expiry"] = (m["LTD"] - m["Date"]).dt.days
     m = m.drop(columns=[c for c in m.columns if c.endswith("_a")])
+    # 'CCZ6' -> 'CC+LCC Z6' so every header/dropdown says it is the combined OI
+    m["ice_symbol"] = commodity + " " + m["ice_symbol"].str[len(base):]
     return m.sort_values(keys).reset_index(drop=True)
+
+
+def price_legs(commodity: str):
+    """(label of 'settlement', label of 'settlement_2' or None) — the combined
+    market carries both legs' prices, every real market just its own."""
+    if commodity in COMBINED:
+        return COMBINED[commodity]
+    return commodity, None
 
 
 def _rollex_mtime() -> float:
