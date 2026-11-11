@@ -117,7 +117,10 @@ _NUMERIC_COLS = ["Open", "High", "Low", "settlement", "volume", "open_interest"]
 @st.cache_data
 def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     if commodity in COMBINED:
-        return _load_combined(commodity, mtime)
+        # Cached on its own: st.cache_data keys on a function's OWN source, so
+        # routing through this cache would keep serving a stale combined frame
+        # whenever only _load_combined's code changes.
+        return _load_combined(commodity, mtime).copy()
     filename, _ = COMMODITIES[commodity]
     df = pd.read_parquet(DB_PATH / filename)
     df["Date"] = pd.to_datetime(df["Date"])
@@ -135,6 +138,7 @@ def load_data(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     return df[df["open_interest"] > 0].copy()
 
 
+@st.cache_data
 def _load_combined(commodity: str, mtime: float = 0.0) -> pd.DataFrame:
     base, add = COMBINED[commodity]
     b, a = load_data(base, mtime), load_data(add, mtime)
